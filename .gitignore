@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.DS_Store
+dist/
+build/
+*.egg-info/
+
+# Raw export dumps parked here before moving to ~/Lexicon/archive/ — never commit
+downloaded_archives/
+
+# Obsidian opened this repo as a vault on 2026-08-18. Editor state, not source.
+.obsidian/
+
+# Machine-local Claude Code permissions. Never the repo's business.
+.claude/settings.local.json
+.claude/settings.json

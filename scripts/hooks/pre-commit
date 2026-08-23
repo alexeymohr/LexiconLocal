@@ -1,0 +1,6 @@
+#!/bin/bash
+# Refuse to commit staged content that names one of the operator's projects.
+# The protected set is derived from the operator's Lexicon at run time; see
+# scripts/leak_guard.py. LEAK_GUARD=off overrides, loudly.
+. "$(dirname "$0")/_common.sh"
+run_guard --staged

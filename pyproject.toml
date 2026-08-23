@@ -1,0 +1,94 @@
+[project]
+name = "lexiconlocal"
+version = "0.3.0"
+description = "A local, offline second brain for coding agents: capture every session and every repo's docs, search them from any agent."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Alexey Mohr" }]
+keywords = ["knowledge-base", "mcp", "claude-code", "codex", "sqlite", "fts5", "local-first", "second-brain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+dependencies = [
+    "sqlite-vec",
+    "mcp",
+    "pyyaml",
+    "httpx",
+    # Phase 4: server-side Markdown rendering for `lexicon web`. Pure Python,
+    # no build step, no C extension. The only addition the phase needed --
+    # routing is stdlib http.server and the CSS/JS are vendored in-repo.
+    # 3.10.3 published 2026-07-30, verified 20 days old at the 7-day hold.
+    "markdown",
+]
+
+[project.urls]
+Homepage = "https://github.com/alexeymohr/LexiconLocal"
+Repository = "https://github.com/alexeymohr/LexiconLocal"
+Issues = "https://github.com/alexeymohr/LexiconLocal/issues"
+
+[project.scripts]
+lexicon = "lexiconlocal.cli:main"
+lexicon-mcp = "lexiconlocal.mcp_server:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+# Supply-chain hold: no package version may be installed until it has been
+# published for at least 7 days (global rule, no exceptions). At the 2026-08-18
+# resolution six transitive pins were newer than that -- httpx2, httpcore2 and
+# idna had been published the same day. They are legitimate packages
+# (httpx2/httpcore2 are Tom Christie's pydantic-org successor to httpx, pulled
+# in by mcp 2.0.0), so these are date pins, not bans. Relax once each has aged
+# past the hold.
+#
+# Re-checked 2026-08-18 (Phase 3 Task 0): nothing had aged out. Nothing relaxed.
+#
+# Re-checked 2026-08-19 (Phase 4 Task 0) against live PyPI upload times. The
+# phase doc expected all six to be relaxable by now; only ONE is. Upstream kept
+# shipping: uvicorn released 0.52.2/0.52.3 on 08-13 and 0.52.4 on 08-19, and
+# httpx2/httpcore2 added 2.11.0 *and* 2.12.0 on 08-18, so the newest version of
+# each is younger than it was a day ago, not older. Measured ages today:
+#
+#   typing-inspection 0.4.4  2026-08-12   7d  -> RELAXED (pin removed)
+#   uvicorn           0.52.4 2026-08-19   0d  -> hold (0.52.3 is 6d; free 08-20)
+#   pygments          2.21.0 2026-08-17   2d  -> hold (free 2026-08-24)
+#   idna              3.19   2026-08-18   1d  -> hold (free 2026-08-25)
+#   httpx2            2.12.0 2026-08-18   1d  -> hold (free 2026-08-25)
+#   httpcore2         2.12.0 2026-08-18   1d  -> hold (free 2026-08-25)
+#
+# A pin whose upstream releases weekly may never age out on a fixed schedule.
+# That is the rule working as intended, not a problem to route around.
+[tool.uv]
+constraint-dependencies = [
+    "httpx2<=2.10.0",           # 2.12.0 published 2026-08-18 (1d)
+    "httpcore2<=2.10.0",        # 2.12.0 published 2026-08-18 (1d)
+    "idna<=3.18",               # 3.19   published 2026-08-18 (1d)
+    "pygments<=2.20.0",         # 2.21.0 published 2026-08-17 (2d)
+    "uvicorn<=0.52.1",          # 0.52.4 published 2026-08-19 (0d)
+    # typing-inspection: pin removed 2026-08-19, 0.4.4 aged past the hold.
+    # markdown: added in Phase 4. 3.10.3 published 2026-07-30 (20d at add time);
+    # capped so a same-day release cannot arrive through an unattended `uv sync`.
+    "markdown<=3.10.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lexiconlocal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

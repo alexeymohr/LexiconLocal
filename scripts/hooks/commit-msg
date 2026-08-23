@@ -1,0 +1,5 @@
+#!/bin/bash
+# Same guard, over the commit message. Messages are the leak that code review
+# never sees: they describe WHY, and the why is so often the operator's corpus.
+. "$(dirname "$0")/_common.sh"
+run_guard --stdin < "$1"

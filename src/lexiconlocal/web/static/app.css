@@ -1,0 +1,306 @@
+/* Lexicon web UI — vendored, hand-written, no build step (D-2026-08-19-07).
+ *
+ * Aiming at a good macOS utility rather than a web app: the system font stack,
+ * one accent colour, generous line-height for long-form Markdown, and no
+ * animation that delays showing information. Light and dark come from
+ * prefers-color-scheme only — there is no theme toggle, because the OS already
+ * has one and a second switch is a second thing to be wrong.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg:        #f7f7f8;
+  --bg-raised: #ffffff;
+  --bg-sunken: #ececed;
+  --fg:        #1a1a1c;
+  --fg-dim:    #5c5c63;
+  --fg-faint:  #8a8a93;
+  --line:      #dcdce1;
+  --accent:    #2f6fb3;
+  --accent-bg: #e8f0f9;
+  --green:     #2e7d32;
+  --amber:     #b26a00;
+  --red:       #c02b23;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 1px 8px rgba(0,0,0,.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:        #17181a;
+    --bg-raised: #202124;
+    --bg-sunken: #121315;
+    --fg:        #e8e8ea;
+    --fg-dim:    #a6a6ae;
+    --fg-faint:  #74747d;
+    --line:      #303237;
+    --accent:    #6aa9e9;
+    --accent-bg: #1c2836;
+    --green:     #6bbd72;
+    --amber:     #e0a34a;
+    --red:       #ef7b73;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 1px 10px rgba(0,0,0,.25);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- top bar ---------------------------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+  background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  font-size: 15px;
+  flex: 0 0 auto;
+}
+
+.searchbar { position: relative; flex: 1 1 auto; max-width: 620px; }
+
+.searchbar input {
+  width: 100%;
+  padding: 7px 34px 7px 12px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: none;
+}
+.searchbar input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.slash-hint {
+  position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  font: 11px var(--mono); color: var(--fg-faint);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+  pointer-events: none;
+}
+.searchbar input:focus + .slash-hint { display: none; }
+
+.topnav { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+.health-chip {
+  font: 11px/1.6 var(--mono);
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.health-chip.green { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+.health-chip.amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
+.health-chip.red   { color: var(--red);   border-color: color-mix(in srgb, var(--red) 45%, var(--line)); background: color-mix(in srgb, var(--red) 10%, transparent); }
+
+/* ---- layout ----------------------------------------------------------- */
+
+main { max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; outline: none; }
+.footer {
+  max-width: 1080px; margin: 0 auto; padding: 0 20px 28px;
+  color: var(--fg-faint); font: 12px var(--mono);
+}
+.loading { color: var(--fg-faint); padding: 40px 0; }
+
+h1 { font-size: 22px; letter-spacing: -0.02em; margin: 0 0 4px; }
+h2 { font-size: 15px; letter-spacing: -0.01em; margin: 30px 0 10px; color: var(--fg-dim);
+     text-transform: uppercase; font-weight: 620; font-size: 11.5px; letter-spacing: .07em; }
+.subtitle { color: var(--fg-dim); margin: 0 0 18px; }
+
+.grid { display: grid; gap: 14px; }
+.grid.two { grid-template-columns: 1fr 1fr; }
+@media (max-width: 760px) { .grid.two { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+
+/* ---- health strip ----------------------------------------------------- */
+
+.healthstrip { display: flex; flex-wrap: wrap; gap: 22px; align-items: baseline; }
+.stat { display: flex; flex-direction: column; }
+.stat .n { font: 600 19px/1.2 var(--sans); letter-spacing: -0.02em; }
+.stat .l { font-size: 11px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .06em; }
+.stat.warn .n { color: var(--amber); }
+.stat.bad  .n { color: var(--red); }
+
+/* ---- lists ------------------------------------------------------------ */
+
+.rows { display: flex; flex-direction: column; }
+.row {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+.row:last-child { border-bottom: none; }
+.row .when { font: 11.5px var(--mono); color: var(--fg-faint); flex: 0 0 82px; }
+.row .who  { flex: 0 0 auto; }
+.row .what { flex: 1 1 auto; }
+.row .sub  { color: var(--fg-dim); font-size: 13px; }
+
+.pill {
+  display: inline-block; font: 11px/1.7 var(--mono);
+  padding: 0 7px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--fg-dim); white-space: nowrap;
+}
+.pill.active     { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+.pill.superseded { color: var(--fg-faint); text-decoration: line-through; }
+.pill.unknown    { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
+.pill.untested   { color: var(--amber); }
+.pill.errors     { color: var(--red); }
+
+/* ---- search ----------------------------------------------------------- */
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 18px; }
+.filters .pill { cursor: pointer; user-select: none; background: var(--bg-raised); }
+.filters .pill[aria-pressed="true"] {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-bg);
+}
+
+.result {
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-raised); margin-bottom: 8px; cursor: pointer;
+}
+.result:focus-visible, .result.sel {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.result .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.result .title { font-weight: 600; }
+.result .excerpt {
+  margin-top: 6px; color: var(--fg-dim); font-size: 13.5px;
+  white-space: pre-wrap; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.result .locator { font: 11px var(--mono); color: var(--fg-faint); margin-top: 6px; word-break: break-all; }
+
+/* Low confidence is muted, never hidden: the operator decides, not the
+ * ranker. Anything below ~0.45 reads as "the engine is not sure". */
+.result.low { opacity: .58; }
+.result.low .title { font-weight: 500; }
+
+.conf { font: 11px var(--mono); color: var(--fg-faint); }
+.conf.hi { color: var(--green); }
+.conf.lo { color: var(--amber); }
+
+/* ---- document --------------------------------------------------------- */
+
+.docmeta {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+  margin-bottom: 14px; color: var(--fg-dim); font-size: 13px;
+}
+.sourcepath {
+  font: 11.5px var(--mono); color: var(--fg-faint);
+  word-break: break-all; display: inline-flex; gap: 8px; align-items: center;
+}
+.copybtn {
+  font: 11px var(--sans); padding: 1px 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--bg-raised);
+  color: var(--fg-dim); cursor: pointer;
+}
+.copybtn:hover { color: var(--fg); border-color: var(--accent); }
+
+.prose { background: var(--bg-raised); border: 1px solid var(--line);
+         border-radius: var(--radius); padding: 22px 26px; }
+.prose h1 { font-size: 21px; margin-top: 0; }
+.prose h2 { font-size: 16.5px; text-transform: none; letter-spacing: -0.01em;
+            color: var(--fg); margin: 26px 0 8px; }
+.prose h3 { font-size: 14.5px; margin: 20px 0 6px; }
+.prose code { font: 12.5px var(--mono); background: var(--bg-sunken);
+              padding: 1px 5px; border-radius: 4px; }
+.prose pre { background: var(--bg-sunken); border: 1px solid var(--line);
+             border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
+.prose pre code { background: none; padding: 0; }
+.prose table { border-collapse: collapse; width: 100%; margin: 12px 0;
+               display: block; overflow-x: auto; }
+.prose th, .prose td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.prose th { background: var(--bg-sunken); }
+.prose blockquote { margin: 12px 0; padding: 2px 0 2px 14px;
+                    border-left: 3px solid var(--line); color: var(--fg-dim); }
+.prose hr { border: none; border-top: 1px solid var(--line); margin: 24px 0; }
+.plain { font: 12.5px/1.6 var(--mono); white-space: pre-wrap; margin: 0; }
+
+.chunk { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.chunk:last-child { border-bottom: none; }
+.chunk-meta { display: flex; gap: 10px; font: 11px var(--mono); color: var(--fg-faint); }
+.chunk-body { font: 13px/1.6 var(--mono); white-space: pre-wrap; margin: 6px 0 0; }
+.chunk-tool .chunk-body { color: var(--fg-dim); }
+.chunk-tool .chunk-kind { color: var(--amber); }
+.chunk:target, .chunk.hit { background: var(--accent-bg); border-radius: 6px;
+                            padding-left: 10px; padding-right: 10px; }
+
+/* ---- misc ------------------------------------------------------------- */
+
+.empty { color: var(--fg-faint); padding: 28px 0; }
+.errorpage main { text-align: center; padding-top: 12vh; }
+.errorpage h1 { font-size: 54px; color: var(--fg-faint); }
+.banner {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  color: var(--fg); border-radius: var(--radius);
+  padding: 10px 14px; margin-bottom: 16px; font-size: 13.5px;
+}
+.crumbs { font-size: 13px; color: var(--fg-faint); margin-bottom: 6px; }
+.crumbs a { color: var(--fg-dim); }
+
+/* A log entry rendered as itself: bullets stay bullets, code stays code.
+ * Slightly tighter than .prose because these sit inside a list of rows. */
+.entry { align-items: flex-start; padding: 12px 0; }
+.entrybody { margin-top: 6px; font-size: 13.5px; color: var(--fg-dim); }
+.entrybody ul, .entrybody ol { margin: 4px 0; padding-left: 20px; }
+.entrybody li { margin: 2px 0; }
+.entrybody p { margin: 6px 0; }
+.entrybody code { font: 12px var(--mono); background: var(--bg-sunken);
+                  padding: 1px 4px; border-radius: 4px; color: var(--fg); }
+.entrybody strong { color: var(--fg); }
+.entrybody pre { background: var(--bg-sunken); border: 1px solid var(--line);
+                 border-radius: 6px; padding: 8px 10px; overflow-x: auto; }
+
+/* Standing link to the plain-English explainer (topics/what-is-the-lexicon.md).
+   Sized like the health chip beside it so the header stays one visual row. */
+.explainer-link {
+  font: 11px/1.6 var(--mono);
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.explainer-link:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}

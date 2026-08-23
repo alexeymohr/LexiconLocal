@@ -1,0 +1,69 @@
+# Golden-query checks -- the corpus-specific half of scripts/golden_queries.py.
+#
+# The harness is generic: it knows HOW to assert (ranking hierarchy, exact
+# symbols via FTS, cross-project fan-out, scoped search, absent-topic
+# separation). It does not know WHAT is in your corpus. This file tells it.
+#
+# Copy to <lexicon_root>/golden/checks.yaml and fill it in with queries that
+# are answered by YOUR curated notes and repo docs. The harness falls back to
+# this example file when yours is absent, and says so loudly -- the example
+# queries are unlikely to be answered by your corpus, so most checks will
+# print as SKIPPED rather than failed.
+#
+# Every query here will be typed into a session that gets archived and
+# indexed, so a query is "present" partly because it is written down. That is
+# fine -- present queries are SUPPOSED to be in the corpus. Absent-topic
+# probes are the opposite, and the harness generates those fresh each run
+# rather than reading them from anywhere. Never add absent probes to this file.
+
+# A query that a CURATED note or an in-repo doc answers directly. Used as the
+# present-topic reference for absent-topic separation (section 4) and as the
+# section-1 check that curated material outranks transcripts.
+#
+# These example values are true of the synthetic corpus the test suite builds
+# (tests/conftest.py): index that corpus and every check here passes. Replace
+# each value with something YOUR notes answer.
+present_reference:
+  query: "Isolated stem render"
+  # Projects the top results are expected to stay within (lowercase). The
+  # check asserts a majority of the top 5, not all.
+  projects: ["forge"]
+
+# Additional present-topic queries for the banner-calibration check (4b).
+# More is better; 3-5 covering different projects and source types is enough.
+present_queries:
+  - "Isolated stem render"
+  - "sidecar inspection for harbor manifests"
+
+# An exact symbol, path or identifier that appears in a repo doc. Must be
+# found by the lexical leg regardless of what the embedding model thinks.
+exact_symbol:
+  query: '"AAFParseError"'
+  expect_source_type: repo-doc
+
+# A string that lives only in a tool-event header (a command line, a file
+# path from a tool call). Proves exact identifiers never depend on embeddings.
+tool_event_string:
+  query: '"pytest tests/test_slots.py"'
+
+# A conceptual question whose answer is spread across more than one project.
+# `expect_project` must appear; the harness also asserts >= 2 distinct origins.
+cross_project:
+  query: "verified approach for clean isolated stems"
+  expect_project: "forge"
+
+# Project filter and alias resolution. `current` is a project name, `alias` a
+# historical name that INDEX.md or config.yaml's historical_aliases maps to it.
+project_filter:
+  query: "sidecar inspection"
+  current: "Lighthouse"
+  alias: "Beacon"
+  alias_query: "sidecar"
+
+# Small projects that must be able to answer questions about themselves.
+# Pick ones with few documents -- the defect this guards against only shows
+# on projects that do not rank globally.
+small_projects: ["Lighthouse"]
+
+# One large project, for the latency check on the scoped-search fallback.
+large_project: "Forge"

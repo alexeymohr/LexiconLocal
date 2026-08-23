@@ -1,0 +1,34 @@
+#!/bin/bash
+# The push is the only irreversible step, so it is where the human reads.
+#
+# Prints every commit message about to leave the machine, runs the leak guard
+# over the whole range, and waits for an explicit yes. Refuses when no
+# terminal is attached: an unattended push of a public repo is a push nobody
+# reviewed.
+. "$(dirname "$0")/_common.sh"
+remote="$1"
+fail=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$local_sha" ] && continue
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$remote_sha" 2>/dev/null; then
+    range="$local_sha"; label="every commit on $local_ref (new remote branch)"
+  else
+    range="$remote_sha..$local_sha"; label="$range"
+  fi
+  echo "pre-push: about to send $label to $remote"
+  echo "----- commit messages -----"
+  git log --format='  %h %s%n%b' "$range" | sed '/^$/d' | sed 's/^\([^ ]\)/      \1/'
+  echo "----- leak guard over messages + diff -----"
+  if ! run_guard --range "$range"; then fail=1; fi
+done
+if [ "$fail" -ne 0 ]; then
+  echo "pre-push: refusing -- the leak guard found protected names. Amend before pushing." >&2
+  exit 1
+fi
+if [ ! -t 1 ] && [ ! -e /dev/tty ]; then
+  echo "pre-push: no terminal attached; refusing to push unreviewed. Push from a shell." >&2
+  exit 1
+fi
+printf 'pre-push: read the above. Push? [yes/NO] ' > /dev/tty
+read -r answer < /dev/tty
+[ "$answer" = "yes" ] || { echo "pre-push: not pushed." >&2; exit 1; }
