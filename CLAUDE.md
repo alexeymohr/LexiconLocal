@@ -33,7 +33,7 @@ A local, offline knowledge base for coding agents: every session transcript and 
 - **After every `PIPELINE_VERSION` bump, run `uv run python scripts/golden_queries.py`** — it asserts search quality against the live index and exits non-zero on regression. Ranking defects do not show up in the unit tests. The corpus-specific half of that suite is `<lexicon_root>/golden/checks.yaml`; the harness is generic.
 - **Never quote a golden-query absent-topic probe phrase in any `.md` file, decision record, or commit message.** The harness generates them fresh from a date-seeded combination each run precisely so a leak cannot compound into tomorrow's check. The word pools it draws from are fine to reference — only a specific generated combination is a probe.
 - **Calibrated constants are starting points, not truths.** The static boosts, the L2 confidence bounds, the absent-median threshold and the exact-scan cutoff were measured on one corpus. Changing one needs a measurement, not a hunch, and the golden suite is how it is checked.
-- Commit in logical units with clear messages. Never commit to the data repo from here.
+- Commit in logical units with clear messages. **Do not commit the data repo's own content from here** — notes a distillation pass produced belong to the session that produced them, so attribution matches what actually happened. Maintenance performed from this session (a repaired `INDEX.md` row, a `config.yaml` entry, a decision record) may be committed here, and the message should say what it was.
 
 ## Commands
 
