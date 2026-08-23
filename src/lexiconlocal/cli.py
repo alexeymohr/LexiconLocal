@@ -264,7 +264,7 @@ def cmd_distill(args: argparse.Namespace) -> int:
     DESIGN.md §7 keeps distillation lazy on purpose. This does not change that;
     it just stops the backlog from being invisible.
     """
-    from .distill import distill_prompt, distillation_backlog
+    from .distill import alias_suppressions, distill_prompt, distillation_backlog
 
     cfg = load_config(args.config)
     backlog = distillation_backlog(cfg, limit=args.limit)
@@ -284,6 +284,7 @@ def cmd_distill(args: argparse.Namespace) -> int:
 
     if not backlog:
         print("Nothing to distil — every indexed project has notes.")
+        _print_suppressions(alias_suppressions(cfg))
         return 0
     print(f"{len(backlog)} project(s) with raw material but no distilled notes")
     print(f"{'project':<28} {'docs':>6} {'chunks':>8} {'repo-doc':>9} "
@@ -296,7 +297,28 @@ def cmd_distill(args: argparse.Namespace) -> int:
     print()
     print("Ranked by volume decayed against recency. "
           "`lexicon distill --suggest` prints the pass prompt for the top one.")
+    _print_suppressions(alias_suppressions(cfg))
     return 0
+
+
+def _print_suppressions(suppressed: list) -> None:
+    """Say what the backlog is leaving out, and on whose authority.
+
+    An omission nobody can see cannot be challenged. These are the projects
+    `historical_aliases` declares to be old names of something already
+    distilled -- true of a rename, wrong for a predecessor or a spike, and the
+    difference is a judgement only the operator can make.
+    """
+    if not suppressed:
+        return
+    print()
+    print(f"{len(suppressed)} project(s) omitted as declared renames "
+          f"(historical_aliases in config.yaml):")
+    for s in suppressed:
+        print(f"  {s.project[:28]:<28} {s.documents:>6,} docs   "
+              f"treated as {s.distilled_as}")
+    print("Remove an entry there if it is a separate body of work rather than "
+          "an old name, and it returns to the backlog.")
 
 
 def cmd_report(args: argparse.Namespace) -> int:

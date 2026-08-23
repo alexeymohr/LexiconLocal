@@ -84,21 +84,107 @@ def project_note_dirs(lexicon_root: Path) -> list[Path]:
     return sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 
-def distilled_projects(cfg: Config) -> set[str]:
-    """Projects that already have `projects/<name>/` notes, plus their aliases.
+def _renames(cfg: Config) -> dict[str, set[str]]:
+    """Current name (lowered) -> the historical names that mean the same project."""
+    out: dict[str, set[str]] = {}
+    for old, current in (cfg.historical_aliases or {}).items():
+        out.setdefault(str(current).strip().lower(), set()).add(str(old).strip().lower())
+    return out
 
-    Alias resolution matters here: a project indexed under a historical name
-    may be distilled under its current one. Without this it
-    would appear in the backlog forever, and the backlog would be wrong in the
-    one way that makes people stop reading it.
+
+def distilled_projects(cfg: Config) -> set[str]:
+    """Projects that already have `projects/<name>/` notes, plus their old names.
+
+    Only *declared renames* are folded in: the `historical_aliases` table in
+    `config.yaml`, which exists precisely to record "this is the same project
+    under a name it used to have". A project indexed under an old name really
+    is distilled once its current name has notes, and listing it forever would
+    make the backlog wrong in the one way that makes people stop reading it.
+
+    What is deliberately **not** folded in is `INDEX.md` alias resolution. That
+    map also carries *lineage* -- predecessors, spikes, POCs, false starts and
+    sub-missions -- named in a family row's prose because they are related
+    work, not the same work. Resolving through it let one distilled sibling
+    swallow its whole family, and did so silently: projects with real material
+    simply never appeared, including the spikes that sit between a rebuild and
+    the thing it replaced.
+
+    That is backwards for how the material is actually produced. A rebuild from
+    scratch is a different body of learning from its predecessor -- the reason
+    it was rebuilt is itself the knowledge -- and a sub-mission spun out of a
+    parent project has its own dead ends. Each earns its own notes. Where a
+    judgement to merge two names is genuinely made, it is declared in
+    `historical_aliases` and reported by :func:`alias_suppressions`.
     """
-    index = load_project_index(cfg.index_md, cfg.historical_aliases)
+    renames = _renames(cfg)
     have: set[str] = set()
     for pdir in project_note_dirs(cfg.lexicon_root):
-        have.add(pdir.name.lower())
-        for alias in index.resolve(pdir.name):
-            have.add(alias.lower())
+        name = pdir.name.lower()
+        have.add(name)
+        have |= renames.get(name, set())
     return have
+
+
+@dataclass
+class Suppression:
+    """A project the backlog omits, and the declared rename that omits it."""
+
+    project: str
+    documents: int
+    distilled_as: str
+
+    def as_dict(self) -> dict:
+        return {
+            "project": self.project,
+            "documents": self.documents,
+            "distilled_as": self.distilled_as,
+        }
+
+
+def alias_suppressions(cfg: Config) -> list[Suppression]:
+    """Projects with indexed material that the backlog omits as declared renames.
+
+    Suppression is a judgement -- someone decided two names are one project --
+    and a judgement that cannot be seen cannot be corrected. This is the
+    backlog's version of the rule that `report` must distinguish "nothing new"
+    from "importer broke": a wrong entry in `historical_aliases` would
+    otherwise show up as a project that simply never appears, which is
+    indistinguishable from having nothing to say about it.
+
+    The list is short by construction -- it can only contain declared renames
+    -- so it stays checkable at a glance.
+    """
+    renames = {
+        str(old).strip().lower(): str(current).strip()
+        for old, current in (cfg.historical_aliases or {}).items()
+    }
+    own = {p.name.lower() for p in project_note_dirs(cfg.lexicon_root)}
+    have = distilled_projects(cfg)
+
+    conn = dbmod.connect(cfg.db_path, read_only=True)
+    try:
+        rows = conn.execute(
+            """
+            SELECT project, COUNT(DISTINCT id) AS documents
+            FROM documents
+            WHERE project IS NOT NULL AND project <> ''
+            GROUP BY project
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = [
+        Suppression(
+            project=r["project"],
+            documents=int(r["documents"] or 0),
+            distilled_as=renames.get(r["project"].lower(), r["project"]),
+        )
+        for r in rows
+        if r["project"].lower() not in own and r["project"].lower() in have
+    ]
+    out.sort(key=lambda s: (-s.documents, s.project))
+    return out
 
 
 def distillation_backlog(cfg: Config, limit: int | None = None) -> list[BacklogEntry]:

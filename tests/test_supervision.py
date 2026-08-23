@@ -447,23 +447,80 @@ def test_backlog_excludes_projects_that_already_have_notes(indexed_tree):
     assert not (listed & have)
 
 
-def test_backlog_resolves_aliases_before_declaring_a_gap(indexed_tree, monkeypatch):
+def test_backlog_folds_a_declared_rename(indexed_tree):
     """A project indexed under a historical name is not undistilled.
 
-    Without alias resolution Beacon would sit in the backlog forever while
-    Lighthouse's notes sat right there -- wrong in the one way that makes people
-    stop reading a backlog.
+    Without this, an old name would sit in the backlog forever while the
+    current name's notes sat right there -- wrong in the one way that makes
+    people stop reading a backlog.
+    """
+    from lexiconlocal import distill
+    from lexiconlocal.config import load_config
+
+    cfg_path = indexed_tree.lexicon_root / "config.yaml"
+    cfg_path.write_text(cfg_path.read_text() + textwrap.dedent("""\
+        historical_aliases:
+          Bellows: forge
+        """))
+    have = distill.distilled_projects(load_config(cfg_path))
+    assert "forge" in have          # its own notes directory
+    assert "bellows" in have        # declared to be the same project, renamed
+
+
+def test_backlog_does_not_fold_lineage_into_identity(indexed_tree):
+    """Related work is not the same work, and must keep its own backlog row.
+
+    `INDEX.md` alias resolution carries lineage as well as renames: a family
+    row names predecessors, spikes and sub-missions in its prose because they
+    belong to the same story, not because they are the same project. Folding
+    those into "already distilled" let one distilled sibling swallow its whole
+    family, silently -- the projects never appeared at all, which reads exactly
+    like having nothing to say about them.
     """
     from lexiconlocal import distill
 
     cfg = indexed_tree
-    have = distill.distilled_projects(cfg)
-    from lexiconlocal.projects import load_project_index
+    cfg.index_md.write_text(textwrap.dedent("""\
+        # Lexicon INDEX
 
-    index = load_project_index(cfg.index_md)
-    for name in list(have):
-        for alias in index.resolve(name):
-            assert alias.lower() in have
+        ## Project families (alias groups)
+
+        | Family | Members | Notes |
+        |---|---|---|
+        | **Workshop line** | `Forge`, `Anvil` | Rebuilt from `Bellows`; the spike `Tongs` sits between them |
+
+        ## Active projects
+
+        | Project | One-liner | Repo path | Last activity | Aliases |
+        |---|---|---|---|---|
+        | Forge | Workshop tooling | `~/programming/Forge` | 2026-08-17 | Smithy |
+        """), encoding="utf-8")
+
+    have = distill.distilled_projects(cfg)
+    assert "forge" in have
+    for related in ("anvil", "bellows", "tongs", "smithy"):
+        assert related not in have, f"{related} is related work, not the same work"
+
+
+def test_alias_suppression_is_reported(indexed_tree):
+    """What the backlog leaves out must be visible, or it cannot be corrected."""
+    from lexiconlocal import distill
+    from lexiconlocal.config import load_config
+
+    cfg_path = indexed_tree.lexicon_root / "config.yaml"
+    cfg_path.write_text(cfg_path.read_text() + textwrap.dedent("""\
+        historical_aliases:
+          Lighthouse: forge
+        """))
+    cfg = load_config(cfg_path)
+
+    listed = {e.project.lower() for e in distill.distillation_backlog(cfg)}
+    assert "lighthouse" not in listed, "suppressed, as declared"
+
+    suppressed = distill.alias_suppressions(cfg)
+    entry = next(s for s in suppressed if s.project.lower() == "lighthouse")
+    assert entry.distilled_as == "forge"
+    assert entry.documents > 0, "a suppressed project still has material to report"
 
 
 def test_backlog_ranks_recent_work_above_dormant_bulk():
