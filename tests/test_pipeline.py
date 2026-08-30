@@ -890,3 +890,94 @@ def test_json_search_output_shape_is_unchanged(capsys):
     payload = _json.loads(capsys.readouterr().out)
     assert payload == [r.as_dict()]
     assert set(payload[0]) == set(r.as_dict())
+
+
+# --------------------------------------------------------------------------
+# Stage 3 — lexicon_read refuses to guess
+# --------------------------------------------------------------------------
+
+def _reader(indexed):
+    """A read-only Searcher over the indexed fixture corpus."""
+    from lexiconlocal.search import Searcher
+    cfg, _ = indexed
+    return Searcher(cfg, None)
+
+
+def test_exact_path_wins_over_partial_matches(indexed):
+    s = _reader(indexed)
+    try:
+        rows = s.conn.execute("SELECT path FROM documents ORDER BY path").fetchall()
+        exact = rows[0]["path"]
+        got = s.read(exact)
+        assert got.get("path") == exact, got.get("error")
+    finally:
+        s.close()
+
+
+def test_a_unique_partial_path_still_resolves(indexed):
+    s = _reader(indexed)
+    try:
+        full = s.conn.execute(
+            "SELECT path FROM documents WHERE path LIKE '%mission.md' LIMIT 1"
+        ).fetchone()["path"]
+        got = s.read("mission.md")
+        assert got.get("path") == full, got.get("error")
+    finally:
+        s.close()
+
+
+def test_an_ambiguous_partial_path_refuses_to_guess(indexed):
+    """Several matches must produce a refusal, not an arbitrary first row."""
+    s = _reader(indexed)
+    try:
+        n = s.conn.execute(
+            "SELECT COUNT(*) c FROM documents WHERE path LIKE '%.md'"
+        ).fetchone()["c"]
+        assert n > 1, "fixture must have several .md documents for this to mean anything"
+        got = s.read(".md")
+        assert "error" in got
+        assert "refusing to guess" in got["error"]
+        assert len(got["candidates"]) > 1
+        assert got["candidates"] == sorted(got["candidates"]), "must be deterministic"
+    finally:
+        s.close()
+
+
+def test_the_candidate_list_is_capped(indexed):
+    from lexiconlocal.search import AMBIGUOUS_READ_LIMIT
+
+    s = _reader(indexed)
+    try:
+        got = s.read("/")  # matches every document
+        assert "error" in got
+        assert len(got["candidates"]) <= AMBIGUOUS_READ_LIMIT
+    finally:
+        s.close()
+
+
+def test_like_wildcards_in_the_path_are_literal(indexed):
+    """`_` and `%` are ordinary characters in a path, not pattern syntax.
+
+    Unescaped, `_` matches any character -- so `a_b` would silently match `axb`.
+    Real paths are full of underscores, so this was not a corner case.
+    """
+    s = _reader(indexed)
+    try:
+        assert s.conn.execute(
+            "SELECT COUNT(*) c FROM documents WHERE path LIKE '%mission.md'"
+        ).fetchone()["c"] >= 1
+        # 'mission_md' only matches 'mission.md' if `_` is treated as a wildcard.
+        got = s.read("mission_md")
+        assert "error" in got and "No indexed document" in got["error"], got
+    finally:
+        s.close()
+
+
+def test_a_missing_path_still_reports_not_found(indexed):
+    s = _reader(indexed)
+    try:
+        got = s.read("definitely-not-in-this-corpus.xyz")
+        assert "No indexed document" in got.get("error", "")
+        assert "candidates" not in got
+    finally:
+        s.close()

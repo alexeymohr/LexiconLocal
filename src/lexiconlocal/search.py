@@ -173,6 +173,23 @@ def _lexical_coverage(query: str, text: str) -> float:
     return sum(1 for t in terms if t in low) / len(terms)
 
 
+#: How many candidate paths an ambiguous read lists. Enough to choose from,
+#: bounded so that a one-character fragment cannot pour the corpus into an
+#: agent's context window.
+AMBIGUOUS_READ_LIMIT = 10
+
+
+def _escape_like(text: str) -> str:
+    """Make ``%`` and ``_`` literal inside a LIKE pattern.
+
+    A path is user input, not a pattern. Unescaped, ``_`` matches any character
+    and ``%`` matches any run of them, so a path fragment containing either --
+    and real paths contain underscores constantly -- silently matched documents
+    the caller never named.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def median_confidence(results: list["Result"]) -> float:
     """Median confidence across results -- the corpus-coverage signal.
 
@@ -553,12 +570,32 @@ class Searcher:
             "SELECT * FROM documents WHERE path=?", (path,)
         ).fetchone()
         if doc is None:
-            like = self.conn.execute(
-                "SELECT * FROM documents WHERE path LIKE ? LIMIT 1", (f"%{path}%",)
-            ).fetchone()
-            if like is None:
+            # The fallback used to be `LIKE '%path%' LIMIT 1` with no ordering:
+            # given several matches it returned whichever row SQLite happened to
+            # reach first and said nothing. Silently reading the wrong document
+            # is worse than refusing -- the caller cannot tell it happened, and
+            # everything downstream inherits the mistake.
+            rows = self.conn.execute(
+                "SELECT * FROM documents WHERE path LIKE ? ESCAPE '\\' "
+                "ORDER BY path LIMIT ?",
+                (f"%{_escape_like(path)}%", AMBIGUOUS_READ_LIMIT + 1),
+            ).fetchall()
+            if not rows:
                 return {"error": f"No indexed document matching {path!r}"}
-            doc = like
+            if len(rows) > 1:
+                shown = [r["path"] for r in rows[:AMBIGUOUS_READ_LIMIT]]
+                more = len(rows) > AMBIGUOUS_READ_LIMIT
+                listing = "\n".join(f"  {c}" for c in shown)
+                return {
+                    "error": (
+                        f"{path!r} matches more than one indexed document; refusing to "
+                        f"guess. Re-read with one of these exact paths"
+                        f"{f' (first {AMBIGUOUS_READ_LIMIT} of more)' if more else ''}:"
+                        f"\n{listing}"
+                    ),
+                    "candidates": shown,
+                }
+            doc = rows[0]
 
         occ = self.conn.execute(
             """SELECT o.ord, c.text, c.kind FROM occurrences o
