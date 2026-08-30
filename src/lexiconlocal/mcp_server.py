@@ -26,6 +26,7 @@ from .search import (
     CONFIDENCE_ABSENT_MEDIAN,
     CONFIDENCE_COVERED,
     Searcher,
+    ABSENT_BANNER,
     median_confidence,
 )
 
@@ -34,9 +35,26 @@ REMINDER = (
     "Verify any claim about current code against the live repository."
 )
 
+
+def _package_version() -> str:
+    """The one authoritative version: what is actually installed.
+
+    This was a second literal, and it drifted -- the server advertised 0.2.0 to
+    every client while the package was 0.3.0. A version an agent reads should
+    describe the code answering it, so it is read rather than restated. The
+    fallback covers running from a source tree with nothing installed, where
+    there is no metadata to read and no version to be wrong about.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("lexiconlocal")
+    except (ImportError, PackageNotFoundError):  # pragma: no cover - source tree
+        return "0+unknown"
+
+
 mcp = MCPServer(
     name="lexicon",
-    version="0.2.0",
+    version=_package_version(),
     instructions=(
         "The operator's local knowledge base: curated project notes, in-place repo "
         "documentation, and archived Claude Code / Codex / ChatGPT sessions. "
@@ -75,12 +93,6 @@ def _get_searcher() -> tuple[Searcher | None, str | None]:
 
 
 #: Prepended when the corpus probably does not cover the query at all.
-#: Stated as a sentence rather than left implicit in a number, because the
-#: judgement must not depend on the agent noticing and interpreting a float.
-ABSENT_BANNER = (
-    "LIKELY NOT COVERED: no strong match — the Lexicon probably holds nothing on "
-    "this. Say so rather than stretching a weak result into an answer."
-)
 
 
 @mcp.tool(

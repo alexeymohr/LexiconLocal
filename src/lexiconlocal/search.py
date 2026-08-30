@@ -152,6 +152,15 @@ CONFIDENCE_COVERED = 0.80
 #: cannot be trusted to stay calibrated on its own.
 CONFIDENCE_ABSENT_MEDIAN = 0.60
 
+#: Said in a sentence rather than left implicit in a number, because the
+#: judgement must not depend on the reader -- agent or human -- noticing a float
+#: and knowing what it means. Defined here, beside the threshold that triggers
+#: it, so the MCP server and the CLI cannot drift into two different warnings.
+ABSENT_BANNER = (
+    "LIKELY NOT COVERED: no strong match — the Lexicon probably holds nothing on "
+    "this. Say so rather than stretching a weak result into an answer."
+)
+
 _TERM = re.compile(r"[A-Za-z0-9_]{3,}")
 
 

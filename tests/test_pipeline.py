@@ -798,3 +798,95 @@ def test_search_refuses_a_nonlocal_host_instead_of_degrading(monkeypatch, capsys
     )
     assert cli.cmd_search(args) == 2
     assert "REFUSED" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# Stage 2 — surfaces that describe behaviour accurately
+# --------------------------------------------------------------------------
+
+def test_mcp_advertises_the_installed_package_version():
+    """One authoritative version, read rather than restated.
+
+    The server carried its own literal and drifted: it told every client 0.2.0
+    while the package was 0.3.0. Asserting equality rather than a fixed string
+    keeps this test correct when the version next changes.
+    """
+    from importlib.metadata import version
+
+    from lexiconlocal.mcp_server import _package_version
+
+    assert _package_version() == version("lexiconlocal")
+
+
+def test_the_absent_banner_has_one_definition():
+    """CLI and MCP must not drift into two different warnings."""
+    from lexiconlocal import mcp_server, search
+
+    assert mcp_server.ABSENT_BANNER is search.ABSENT_BANNER
+
+
+def test_human_search_output_leads_with_confidence_and_keeps_score(capsys):
+    import argparse
+
+    from lexiconlocal import cli
+    from lexiconlocal.search import Result
+
+    r = Result(
+        chunk_id=1, path="/x/y.md", title="T", project="P",
+        source_type="lexicon", doc_date="2026-01-01", chunk_ord=0,
+        chunk_kind="prose", excerpt="body", score=0.1234,
+        matched_by=["fts"], confidence=0.91,
+    )
+    cli._render_results(argparse.Namespace(json=False), [r])
+    out = capsys.readouterr().out
+    assert "conf=0.91" in out, "confidence must be shown"
+    assert "0.1234" in out, "score must remain as secondary diagnostics"
+    assert out.index("conf=") < out.index("score"), "confidence leads"
+
+
+def test_low_median_confidence_emits_the_coverage_warning(capsys):
+    import argparse
+
+    from lexiconlocal import cli
+    from lexiconlocal.search import ABSENT_BANNER, Result
+
+    weak = [Result(chunk_id=i, path=f"/x/{i}.md", title="T", project="P",
+                   source_type="lexicon", doc_date="2026-01-01", chunk_ord=0,
+                   chunk_kind="prose", excerpt="body", score=0.01,
+                   matched_by=["fts"], confidence=0.20) for i in range(3)]
+    cli._render_results(argparse.Namespace(json=False), weak)
+    assert ABSENT_BANNER in capsys.readouterr().out
+
+
+def test_confident_results_do_not_emit_the_coverage_warning(capsys):
+    import argparse
+
+    from lexiconlocal import cli
+    from lexiconlocal.search import ABSENT_BANNER, Result
+
+    strong = [Result(chunk_id=i, path=f"/x/{i}.md", title="T", project="P",
+                     source_type="lexicon", doc_date="2026-01-01", chunk_ord=0,
+                     chunk_kind="prose", excerpt="body", score=0.5,
+                     matched_by=["fts"], confidence=0.95) for i in range(3)]
+    cli._render_results(argparse.Namespace(json=False), strong)
+    assert ABSENT_BANNER not in capsys.readouterr().out
+
+
+def test_json_search_output_shape_is_unchanged(capsys):
+    """JSON is a public surface; Stage 2 changes the human view only."""
+    import argparse
+    import json as _json
+
+    from lexiconlocal import cli
+    from lexiconlocal.search import Result
+
+    r = Result(
+        chunk_id=1, path="/x/y.md", title="T", project="P",
+        source_type="lexicon", doc_date="2026-01-01", chunk_ord=3,
+        chunk_kind="prose", excerpt="body", score=0.1234,
+        matched_by=["fts"], confidence=0.91,
+    )
+    cli._render_results(argparse.Namespace(json=True), [r])
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload == [r.as_dict()]
+    assert set(payload[0]) == set(r.as_dict())

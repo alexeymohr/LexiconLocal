@@ -19,7 +19,12 @@ from .indexer import Indexer
 from .lock import IndexLock
 from .preflight import run_preflight
 from .report import build_report
-from .search import Searcher
+from .search import (
+    ABSENT_BANNER,
+    CONFIDENCE_ABSENT_MEDIAN,
+    Searcher,
+    median_confidence,
+)
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -134,6 +139,39 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_results(args, results) -> None:
+    """Print search results for a human.
+
+    Extracted from `cmd_search` so the rendering can be asserted directly: the
+    confidence-versus-score decision is a product judgement, not a formatting
+    detail, and a judgement worth making is worth a test.
+    """
+    if args.json:
+        print(json.dumps([r.as_dict() for r in results], indent=2))
+    elif not results:
+        print("No results.")
+    else:
+        # Confidence leads; score follows as diagnostics. The score is an
+        # ordinal RRF artefact -- it says which result ranked higher, never
+        # whether the corpus holds anything. Leading with it invited exactly the
+        # reading the number cannot support, and the MCP surface had said so in
+        # words for months while the CLI showed the score alone.
+        median = median_confidence(results)
+        if median < CONFIDENCE_ABSENT_MEDIAN:
+            print(f"\n{ABSENT_BANNER}")
+            print(f"(median confidence {median:.2f}, below {CONFIDENCE_ABSENT_MEDIAN:.2f})")
+        for i, r in enumerate(results, 1):
+            print(f"\n{i}. conf={r.confidence:.2f}  [score {r.score:.4f}] {r.source_type}"
+                  f"{'/' + r.chunk_kind if r.chunk_kind != 'prose' else ''}"
+                  f"  project={r.project or '-'}  date={r.doc_date or '-'}"
+                  f"  via={'+'.join(r.matched_by)}")
+            if r.title:
+                print(f"   {r.title}")
+            print(f"   {r.path}  (chunk {r.chunk_ord})")
+            excerpt = r.excerpt.replace("\n", "\n   ")
+            print(f"   {excerpt}")
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     emb = None
@@ -169,21 +207,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(f"REFUSING TO SEARCH: {e}", file=sys.stderr)
         return 2
 
-    if args.json:
-        print(json.dumps([r.as_dict() for r in results], indent=2))
-    elif not results:
-        print("No results.")
-    else:
-        for i, r in enumerate(results, 1):
-            print(f"\n{i}. [{r.score:.4f}] {r.source_type}"
-                  f"{'/' + r.chunk_kind if r.chunk_kind != 'prose' else ''}"
-                  f"  project={r.project or '-'}  date={r.doc_date or '-'}"
-                  f"  via={'+'.join(r.matched_by)}")
-            if r.title:
-                print(f"   {r.title}")
-            print(f"   {r.path}  (chunk {r.chunk_ord})")
-            excerpt = r.excerpt.replace("\n", "\n   ")
-            print(f"   {excerpt}")
+    _render_results(args, results)
     if emb:
         emb.close()
     searcher.close()

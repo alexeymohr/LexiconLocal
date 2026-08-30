@@ -38,14 +38,14 @@ The **code repo** (this one) is the machinery. The **data repo** is the operator
 ├── topics/<domain>.md          # cross-project learnings
 ├── golden/checks.yaml          # the corpus-specific half of the golden-query suite
 ├── private/                    # never indexed; also holds the leak guard's tuning files
-├── archive/                    # RAW, append-only — gitignored
+├── archive/                    # RAW, non-destructive — gitignored
 │   ├── chatgpt/  claude/       # dated account-export dumps, untouched
 │   ├── claude-code/  codex/    # copies of agent session transcripts
 │   └── documents/              # reports, briefs, artifacts worth keeping
 └── index/                      # lexicon.sqlite + logs + state — gitignored, disposable
 ```
 
-`archive/` and `index/` are gitignored; everything else is versioned. `log.md` and `archive/` are append-only. `overview.md` and `decisions.md` are edited in place; git preserves every prior state.
+`archive/` and `index/` are gitignored; everything else is versioned. `log.md` is append-only. `archive/` is *non-destructive*: nothing already there is deleted, but a session file may be refreshed as its source transcript grows — a transcript is still being written when the session ends. `overview.md` and `decisions.md` are edited in place; git preserves every prior state.
 
 ## 4. File conventions
 

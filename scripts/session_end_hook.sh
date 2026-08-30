@@ -58,9 +58,12 @@ fi
   if [ -z "$SESSION_DIR" ]; then
     echo "$(ts) hook: no usable transcript_path in payload; nothing copied" >> "$LOG"
   else
-    # --ignore-existing keeps the archive append-only: an existing copy is
-    # never overwritten, only new files land. Transcripts grow by appending,
-    # so also allow size-differing files through with --update.
+    # The archive is non-destructive, not strictly append-only: --update means
+    # destination-only material is never deleted, while a session file already
+    # copied may be refreshed as its source transcript grows. That refresh is
+    # the point -- a live transcript is still being written when a session ends,
+    # so an --ignore-existing archive would freeze the first partial copy and
+    # silently lose everything appended after it.
     if rsync -a --update --exclude='.DS_Store' "$SESSION_DIR/" \
         "$ARCHIVE_DIR/$(basename "$SESSION_DIR")/" >>"$LOG" 2>&1; then
       n=$(find "$ARCHIVE_DIR/$(basename "$SESSION_DIR")" -type f 2>/dev/null | wc -l | tr -d ' ')

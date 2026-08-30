@@ -30,7 +30,7 @@ Nothing leaves your machine. The only network call is to Ollama on `localhost`.
 ├── projects/<name>/           # curated notes: overview.md, decisions.md, log.md
 ├── topics/                    # cross-project learnings
 ├── private/                   # never indexed
-├── archive/                   # raw transcripts and exports — append-only, gitignored
+├── archive/                   # raw transcripts and exports — non-destructive, gitignored
 └── index/                     # the SQLite index — disposable, gitignored
 ```
 

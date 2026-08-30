@@ -5,7 +5,7 @@
 # local agent logs expire, and a transcript not copied tonight may not exist
 # tomorrow. Indexing can always be redone from the archive.
 #
-#   1. sync agent transcripts into the archive (copy, never move, append-only)
+#   1. sync agent transcripts into the archive (copy, never move, non-destructive)
 #   2. re-snapshot Codex memories only if their content changed
 #   3. file anything dropped in downloaded_archives/
 #   4. preflight -> index -> report
