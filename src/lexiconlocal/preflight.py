@@ -28,7 +28,13 @@ import httpx
 
 from .agents import agent_states
 from .config import Config
-from .embed import DEFAULT_HOST, DEFAULT_MODEL
+from .embed import (
+    DEFAULT_HOST,
+    DEFAULT_MODEL,
+    EmbedTargetRefused,
+    require_local_host,
+    require_local_model,
+)
 from .registration import registrations
 
 OLLAMA_START_TIMEOUT = 20.0
@@ -151,6 +157,13 @@ def _restart_ollama(host: str) -> tuple[bool, str]:
 
 
 def check_ollama(host: str = DEFAULT_HOST, *, autostart: bool = True) -> tuple[Check, dict | None]:
+    # Refuse a non-local target before the first request, not after it: this is
+    # the same gate `Embedder` applies, so preflight cannot bless a host that
+    # ordinary indexing would reject.
+    try:
+        host = require_local_host(host)
+    except EmbedTargetRefused as e:
+        return Check("ollama", False, str(e)), None
     tags = _tags(host)
     if tags is not None:
         return Check("ollama", True, f"reachable at {host}"), tags
@@ -191,6 +204,11 @@ def check_embedding(model: str = DEFAULT_MODEL, host: str = DEFAULT_HOST) -> Che
     2,793 prose chunks silently piled up unembedded. The only check that would
     have caught it is the one that does the actual work.
     """
+    try:
+        host = require_local_host(host)
+        require_local_model(model)
+    except EmbedTargetRefused as e:
+        return Check("embedding", False, str(e))
     try:
         r = httpx.post(
             f"{host.rstrip('/')}/api/embed",

@@ -6,10 +6,27 @@ absent Ollama is a hard stop, not a reason to send the corpus off the machine.
 
 from __future__ import annotations
 
+import ipaddress
+from urllib.parse import urlsplit
+
 import httpx
 
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "nomic-embed-text"
+
+#: The embedding target may only ever be this machine. Checked rather than
+#: defaulted, so that a flag, an environment variable, or a future caller cannot
+#: widen it by accident -- the same rule, and deliberately the same shape, as the
+#: web UI's loopback bind in `web/server.py`. Every chunk of the corpus passes
+#: through this transport, so it is the one place the local-only promise is
+#: either kept or quietly broken.
+LOOPBACK_ONLY = True
+
+#: Ollama tags hosted models with a `:cloud` suffix. Refusing those is
+#: **defence in depth, not the guarantee**: it is a string match against one
+#: vendor's current naming convention and would stop working silently if that
+#: convention changed. The host check is the invariant; this is a second line.
+CLOUD_TAG = ":cloud"
 
 #: Ollama truncates at the model's context window anyway; clipping here keeps
 #: request bodies bounded and avoids pathological single-chunk payloads.
@@ -20,6 +37,66 @@ class EmbedError(RuntimeError):
     pass
 
 
+class EmbedTargetRefused(EmbedError):
+    """The requested embedding target is not on this machine.
+
+    Deliberately raised *before* any HTTP request: a refusal that happens after
+    the connection attempt has already leaked the fact of the corpus to whatever
+    was listening.
+    """
+
+
+def is_cloud_model(name: str) -> bool:
+    """Whether *name* is one of Ollama's hosted model tags."""
+    return name.strip().lower().endswith(CLOUD_TAG)
+
+
+def require_local_model(model: str) -> str:
+    if is_cloud_model(model):
+        raise EmbedTargetRefused(
+            f"refusing model {model!r}: {CLOUD_TAG} models run on the vendor's "
+            f"servers, so embedding with one would send the corpus off this "
+            f"machine. Pull a local model and use that instead."
+        )
+    return model
+
+
+def require_local_host(host: str) -> str:
+    """Return *host* normalised, or refuse it before a request is ever made.
+
+    Accepts `localhost` and any literal loopback address (IPv4 or IPv6, any
+    port). Everything else -- a LAN address, a public address, an ordinary
+    hostname -- is refused. There is deliberately no override: an escape hatch
+    would change the product's contract rather than enforce it.
+    """
+    raw = (host or "").strip().rstrip("/")
+    parts = urlsplit(raw if "://" in raw else f"http://{raw}")
+    if parts.scheme not in ("http", "https"):
+        raise EmbedTargetRefused(
+            f"refusing embedding host {host!r}: only http and https are understood."
+        )
+    hostname = parts.hostname
+    if not hostname:
+        raise EmbedTargetRefused(
+            f"refusing embedding host {host!r}: no host could be read from it."
+        )
+    if hostname.lower() != "localhost":
+        try:
+            addr = ipaddress.ip_address(hostname)
+        except ValueError as e:
+            raise EmbedTargetRefused(
+                f"refusing embedding host {host!r}: {hostname!r} is neither "
+                f"'localhost' nor a literal loopback address. The Lexicon embeds "
+                f"on this machine only."
+            ) from e
+        if LOOPBACK_ONLY and not addr.is_loopback:
+            raise EmbedTargetRefused(
+                f"refusing embedding host {host!r}: {hostname} is not a loopback "
+                f"address. Embedding is local-only; there is no remote override."
+            )
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 class Embedder:
     def __init__(
         self,
@@ -28,8 +105,10 @@ class Embedder:
         batch_size: int = 32,
         timeout: float = 300.0,
     ) -> None:
-        self.model = model
-        self.host = host.rstrip("/")
+        # Validated here, not at the call sites: `Embedder` is what indexing and
+        # search actually instantiate, so this is the single authoritative gate.
+        self.model = require_local_model(model)
+        self.host = require_local_host(host)
         self.batch_size = batch_size
         self._client = httpx.Client(timeout=timeout)
         self._dims: int | None = None
@@ -57,11 +136,22 @@ class Embedder:
                 f"Cannot reach Ollama at {self.host}: {e}\n"
                 f"Start it with `ollama serve`. Never substitute a cloud API."
             ) from e
-        names = {m.get("name", "").split(":")[0] for m in r.json().get("models", [])}
+        # A `:cloud` entry must never satisfy availability. Stripping the tag
+        # before comparing -- which this did -- let `nomic-embed-text:cloud`
+        # answer for `nomic-embed-text`, so a machine with only the hosted model
+        # would have embedded the whole corpus through the vendor.
+        entries = [m.get("name", "") for m in r.json().get("models", [])]
+        local = [n for n in entries if not is_cloud_model(n)]
+        names = {n.split(":")[0] for n in local}
         if self.model.split(":")[0] not in names:
+            cloud_only = [n for n in entries if is_cloud_model(n)]
+            extra = (
+                f" Only hosted models match: {sorted(cloud_only)} — those run off this "
+                f"machine and must never embed the corpus." if cloud_only else ""
+            )
             raise EmbedError(
-                f"Model {self.model!r} is not available in Ollama (have: {sorted(names)}). "
-                f"Run `ollama pull {self.model}`."
+                f"Model {self.model!r} is not available locally in Ollama "
+                f"(local models: {sorted(names)}).{extra} Run `ollama pull {self.model}`."
             )
         self._dims = len(self.embed(["dimension probe"])[0])
         return self._dims

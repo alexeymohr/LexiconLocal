@@ -665,3 +665,136 @@ def test_empty_historical_aliases_resolve_a_name_to_itself(lexicon_tree):
     cfg = load_config(lexicon_tree / "config.yaml")
     assert cfg.historical_aliases == {}
     assert load_project_index(cfg.index_md, {}).resolve("Anything") == ["Anything"]
+
+
+# --------------------------------------------------------------------------
+# The local-only embedding invariant
+#
+# `embed.py` has always *said* localhost only. It did not enforce it: any host
+# was accepted and contacted, and a `:cloud` entry satisfied model availability
+# because the tag was stripped before comparing. Every chunk of the corpus goes
+# through this transport, so the promise is either kept here or not at all.
+# --------------------------------------------------------------------------
+
+class _RecordingClient:
+    """Stands in for httpx.Client and fails loudly if it is ever used."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get(self, url, **kw):  # noqa: D102, ANN001
+        self.calls.append(url)
+        raise AssertionError(f"a request was made to a refused target: {url}")
+
+    def post(self, url, **kw):  # noqa: D102, ANN001
+        self.calls.append(url)
+        raise AssertionError(f"a request was made to a refused target: {url}")
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("host", [
+    "http://localhost:11434",
+    "http://127.0.0.1:11434",
+    "http://127.0.0.1",
+    "https://localhost:11434",
+    "http://[::1]:11434",
+    "http://127.5.5.5:11434",   # the whole 127/8 block is loopback
+])
+def test_loopback_embedding_targets_are_accepted(host):
+    from lexiconlocal.embed import require_local_host
+
+    assert require_local_host(host).startswith(("http://", "https://"))
+
+
+@pytest.mark.parametrize("host", [
+    "http://192.168.1.50:11434",     # LAN
+    "http://10.0.0.7:11434",         # LAN
+    "http://8.8.8.8:11434",          # public
+    "http://ollama.example.com",     # ordinary hostname
+    "http://localhost.evil.com",     # looks local, is not
+    "http://[2001:4860:4860::8888]", # public IPv6
+    "ftp://localhost:11434",         # not an HTTP transport
+])
+def test_nonlocal_embedding_targets_are_refused(host):
+    from lexiconlocal.embed import EmbedTargetRefused, require_local_host
+
+    with pytest.raises(EmbedTargetRefused):
+        require_local_host(host)
+
+
+def test_a_refused_target_never_reaches_the_network(monkeypatch):
+    """The refusal must happen before the connection, not after it."""
+    from lexiconlocal import embed as embed_mod
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(embed_mod.httpx, "Client", lambda **kw: recorder)
+    with pytest.raises(embed_mod.EmbedTargetRefused):
+        embed_mod.Embedder(host="http://192.168.1.50:11434")
+    assert recorder.calls == []
+
+
+def test_cloud_model_names_are_refused():
+    from lexiconlocal.embed import EmbedTargetRefused, is_cloud_model, require_local_model
+
+    assert is_cloud_model("nomic-embed-text:cloud")
+    assert not is_cloud_model("nomic-embed-text")
+    with pytest.raises(EmbedTargetRefused):
+        require_local_model("nomic-embed-text:cloud")
+
+
+def test_a_cloud_tagged_entry_does_not_satisfy_local_model_discovery(monkeypatch):
+    """`nomic-embed-text:cloud` must not answer for `nomic-embed-text`.
+
+    Stripping the tag before comparing meant a machine holding only the hosted
+    model passed preflight and embedded the corpus through the vendor.
+    """
+    from lexiconlocal import embed as embed_mod
+
+    class _TagsOnly:
+        def get(self, url, **kw):  # noqa: ANN001
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def raise_for_status():
+                    return None
+
+                @staticmethod
+                def json():
+                    return {"models": [{"name": "nomic-embed-text:cloud"}]}
+            return R()
+
+        def post(self, url, **kw):  # noqa: ANN001
+            raise AssertionError("must not embed when no local model is present")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(embed_mod.httpx, "Client", lambda **kw: _TagsOnly())
+    emb = embed_mod.Embedder()
+    with pytest.raises(embed_mod.EmbedError) as ei:
+        emb.preflight()
+    assert "cloud" in str(ei.value).lower()
+
+
+def test_search_refuses_a_nonlocal_host_instead_of_degrading(monkeypatch, capsys):
+    """A refused target is an operator error, not a missing service.
+
+    `cmd_search` degrades to lexical-only when Ollama is unreachable, which is
+    right. Routing a *refusal* down that path answered the query while quietly
+    ignoring the `--host` that was asked for, because EmbedTargetRefused is an
+    EmbedError. It must stop instead.
+    """
+    import argparse
+
+    from lexiconlocal import cli
+
+    args = argparse.Namespace(
+        config=None, model="nomic-embed-text", host="http://192.168.1.50:11434",
+        no_vector=False, query="anything", limit=5, project=None, source_type=None,
+        after=None, before=None, kind=None, json=False, exact=False,
+    )
+    assert cli.cmd_search(args) == 2
+    assert "REFUSED" in capsys.readouterr().err

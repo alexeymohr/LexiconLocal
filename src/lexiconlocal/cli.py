@@ -8,7 +8,13 @@ import sys
 from pathlib import Path
 
 from .config import load_config
-from .embed import DEFAULT_HOST, DEFAULT_MODEL, EmbedError, Embedder
+from .embed import (
+    DEFAULT_HOST,
+    DEFAULT_MODEL,
+    EmbedError,
+    Embedder,
+    EmbedTargetRefused,
+)
 from .indexer import Indexer
 from .lock import IndexLock
 from .preflight import run_preflight
@@ -135,6 +141,12 @@ def cmd_search(args: argparse.Namespace) -> int:
         try:
             emb = Embedder(model=args.model, host=args.host)
             emb.preflight()
+        except EmbedTargetRefused as e:
+            # Not a degradation: the operator asked for a target the product
+            # forbids. Falling back to lexical here would answer the query while
+            # quietly ignoring what was asked for.
+            print(f"REFUSED: {e}", file=sys.stderr)
+            return 2
         except EmbedError as e:
             print(f"(vector leg unavailable, falling back to lexical only: {e})", file=sys.stderr)
             emb = None
