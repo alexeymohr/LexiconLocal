@@ -31,6 +31,7 @@ from .embed import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
     EmbedTargetRefused,
+    is_cloud_model,
     ollama_client,
     require_local_host,
     require_local_model,
@@ -184,10 +185,13 @@ def check_model(tags: dict | None, model: str = DEFAULT_MODEL) -> Check:
         return Check("embed model", False, "cannot check — Ollama unreachable")
     names = [m.get("name", "") for m in tags.get("models", [])]
     base = model.split(":")[0]
-    local = [n for n in names if not n.endswith(":cloud")]
+    # The shared predicate, not a second hand-written one: this module's own
+    # `endswith(":cloud")` was correct for the bare form and blind to
+    # `model:120b-cloud`, and two spellings of one rule is how they drift.
+    local = [n for n in names if not is_cloud_model(n)]
     if any(n.split(":")[0] == base for n in local):
         return Check("embed model", True, f"{model} present locally")
-    cloud_only = [n for n in names if n.endswith(":cloud")]
+    cloud_only = [n for n in names if is_cloud_model(n)]
     extra = (
         f" (only cloud models present: {', '.join(cloud_only)} — these must never be used"
         f" for the Lexicon)" if cloud_only else ""

@@ -1176,3 +1176,69 @@ def test_the_shared_client_sets_trust_env_false():
 
     with ollama_client() as c:
         assert c.trust_env is False
+
+
+# --------------------------------------------------------------------------
+# Cloud-tag recognition
+#
+# Ollama writes hosted models two ways. Matching only `:cloud` caught
+# `minimax-m3:cloud` and let `gpt-oss:120b-cloud` through -- a guard that
+# covered one of the forms actually in use.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "minimax-m3:cloud",
+    "gpt-oss:120b-cloud",
+    "qwen3-coder:480b-cloud",
+    "GEMMA4:31B-CLOUD",
+    "Some-Model:CLOUD",
+])
+def test_every_ollama_cloud_tag_form_is_rejected(name):
+    from lexiconlocal.embed import EmbedTargetRefused, is_cloud_model, require_local_model
+
+    assert is_cloud_model(name), name
+    with pytest.raises(EmbedTargetRefused):
+        require_local_model(name)
+
+
+@pytest.mark.parametrize("name", [
+    "nomic-embed-text",
+    "nomic-embed-text:latest",
+    "cloudy-thing:latest",      # "cloud" appears, but not as the tag
+    "my-cloud-model:v2",        # ditto
+    "mxbai-embed-large:335m",
+])
+def test_ordinary_local_models_are_not_mistaken_for_cloud(name):
+    from lexiconlocal.embed import is_cloud_model, require_local_model
+
+    assert not is_cloud_model(name), name
+    assert require_local_model(name) == name
+
+
+def test_one_predicate_governs_both_modules():
+    """preflight must not keep its own spelling of the rule."""
+    from lexiconlocal import preflight as pf
+    from lexiconlocal.embed import is_cloud_model
+
+    assert pf.is_cloud_model is is_cloud_model
+
+
+def test_preflight_discovery_rejects_a_sized_cloud_tag():
+    """A `120b-cloud` entry must not satisfy local availability."""
+    from lexiconlocal.preflight import check_model
+
+    tags = {"models": [{"name": "gpt-oss:120b-cloud"}]}
+    c = check_model(tags, model="gpt-oss")
+    assert not c.ok
+    assert "cloud" in c.detail.lower()
+
+
+def test_a_requested_cloud_model_never_reaches_the_embed_endpoint(monkeypatch):
+    """The refusal must land before any request carrying corpus text."""
+    from lexiconlocal import embed as embed_mod
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(embed_mod, "ollama_client", lambda *a, **k: recorder)
+    with pytest.raises(embed_mod.EmbedTargetRefused):
+        embed_mod.Embedder(model="gpt-oss:120b-cloud")
+    assert recorder.calls == [], "a cloud model reached the network"

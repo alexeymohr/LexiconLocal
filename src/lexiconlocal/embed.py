@@ -22,11 +22,16 @@ DEFAULT_MODEL = "nomic-embed-text"
 #: either kept or quietly broken.
 LOOPBACK_ONLY = True
 
-#: Ollama tags hosted models with a `:cloud` suffix. Refusing those is
-#: **defence in depth, not the guarantee**: it is a string match against one
-#: vendor's current naming convention and would stop working silently if that
-#: convention changed. The host check is the invariant; this is a second line.
-CLOUD_TAG = ":cloud"
+#: Ollama marks hosted models in the tag after the final colon, in two forms:
+#: a bare `model:cloud` and a sized `model:120b-cloud`. Matching only the first
+#: let `gpt-oss:120b-cloud` and `qwen3-coder:480b-cloud` straight through.
+#:
+#: Still **defence in depth, not the guarantee**: it is a string match against
+#: one vendor's current naming convention and would stop working silently if
+#: that convention changed. The host check and `trust_env=False` are the
+#: invariants; this is a second line, and it is now at least a complete one.
+CLOUD_TAG_SUFFIX = "-cloud"
+CLOUD_TAG_EXACT = "cloud"
 
 #: Ollama truncates at the model's context window anyway; clipping here keeps
 #: request bodies bounded and avoids pathological single-chunk payloads.
@@ -47,14 +52,23 @@ class EmbedTargetRefused(EmbedError):
 
 
 def is_cloud_model(name: str) -> bool:
-    """Whether *name* is one of Ollama's hosted model tags."""
-    return name.strip().lower().endswith(CLOUD_TAG)
+    """Whether *name* names one of Ollama's hosted models.
+
+    The tag is what comes after the *final* colon -- `rpartition`, not a split
+    that assumes one colon -- and a name with no colon has no tag to judge, so
+    `nomic-embed-text` is local and a model merely containing the letters
+    "cloud" elsewhere (`cloudy-thing:latest`) is not caught by accident.
+    """
+    _, sep, tag = name.strip().lower().rpartition(":")
+    if not sep:
+        return False
+    return tag == CLOUD_TAG_EXACT or tag.endswith(CLOUD_TAG_SUFFIX)
 
 
 def require_local_model(model: str) -> str:
     if is_cloud_model(model):
         raise EmbedTargetRefused(
-            f"refusing model {model!r}: {CLOUD_TAG} models run on the vendor's "
+            f"refusing model {model!r}: cloud-tagged models run on the vendor's "
             f"servers, so embedding with one would send the corpus off this "
             f"machine. Pull a local model and use that instead."
         )
