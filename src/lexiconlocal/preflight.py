@@ -24,7 +24,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 
 from .agents import agent_states
 from .config import Config
@@ -32,6 +31,7 @@ from .embed import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
     EmbedTargetRefused,
+    ollama_client,
     require_local_host,
     require_local_model,
 )
@@ -52,8 +52,12 @@ class Check:
 
 
 def _tags(host: str, timeout: float = 5.0) -> dict | None:
+    # Through the shared client, not a module-level httpx.get: these two calls
+    # were the ones a factory is easiest to forget, and a bare httpx.get honours
+    # the environment's proxy settings for loopback URLs.
     try:
-        r = httpx.get(f"{host.rstrip('/')}/api/tags", timeout=timeout)
+        with ollama_client(timeout) as client:
+            r = client.get(f"{host.rstrip('/')}/api/tags")
         r.raise_for_status()
         return r.json()
     except Exception:  # noqa: BLE001 - unreachable is the answer, not an error
@@ -210,11 +214,11 @@ def check_embedding(model: str = DEFAULT_MODEL, host: str = DEFAULT_HOST) -> Che
     except EmbedTargetRefused as e:
         return Check("embedding", False, str(e))
     try:
-        r = httpx.post(
-            f"{host.rstrip('/')}/api/embed",
-            json={"model": model, "input": ["preflight probe"]},
-            timeout=60.0,
-        )
+        with ollama_client(60.0) as client:
+            r = client.post(
+                f"{host.rstrip('/')}/api/embed",
+                json={"model": model, "input": ["preflight probe"]},
+            )
     except Exception as e:  # noqa: BLE001
         return Check("embedding", False, f"{host}/api/embed unreachable: {e}")
     if r.status_code != 200:

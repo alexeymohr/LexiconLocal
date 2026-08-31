@@ -348,7 +348,19 @@ def test_preflight_embedding_check_fails_on_a_500(monkeypatch):
         status_code = 500
         text = 'llama-server has terminated: Unable to reach MTLCompilerService'
 
-    monkeypatch.setattr(pf.httpx, "post", lambda *a, **k: R())
+    class _Client:
+        """Stands in for the shared Ollama client, which is now the only seam."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, *a, **k):
+            return R()
+
+    monkeypatch.setattr(pf, "ollama_client", lambda *a, **k: _Client())
     c = pf.check_embedding()
     assert not c.ok
     assert "500" in c.detail

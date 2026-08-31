@@ -1093,3 +1093,86 @@ def test_the_eligible_count_joins_only_what_the_filter_needs(indexed):
         assert s._eligible_chunk_count(kind_only) == direct
     finally:
         s.close()
+
+
+# --------------------------------------------------------------------------
+# Proxy independence
+#
+# Validating the host proved where a request was *pointed*, not where it would
+# *travel*. httpx honours HTTP_PROXY / ALL_PROXY by default and applies them to
+# loopback URLs unless NO_PROXY happens to exclude them, so an environment
+# variable could route corpus text through a proxy while every host check
+# passed. Asserted through the transport httpx actually selects, not a flag.
+# --------------------------------------------------------------------------
+
+_PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+               "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+
+
+def _pool_name(client, url="http://localhost:11434/api/embed"):
+    """Which httpcore pool httpx would use — ConnectionPool or HTTPProxy."""
+    import httpx as _httpx
+    return type(getattr(client._transport_for_url(_httpx.URL(url)), "_pool", None)).__name__
+
+
+@pytest.mark.parametrize("proxy_env", [
+    {"ALL_PROXY": "http://198.51.100.9:3128"},
+    {"HTTP_PROXY": "http://198.51.100.9:3128"},
+    {"HTTPS_PROXY": "http://198.51.100.9:3128", "ALL_PROXY": "http://198.51.100.9:3128"},
+])
+def test_ollama_traffic_ignores_environment_proxies(monkeypatch, proxy_env):
+    from lexiconlocal.embed import ollama_client
+
+    for v in _PROXY_VARS:
+        monkeypatch.delenv(v, raising=False)
+    for k, v in proxy_env.items():
+        monkeypatch.setenv(k, v)
+
+    with ollama_client() as client:
+        assert _pool_name(client) == "ConnectionPool", (
+            "loopback Ollama traffic was routed through a proxy"
+        )
+
+
+def test_the_proxy_risk_this_guards_against_is_real(monkeypatch):
+    """A default httpx client really does proxy loopback — this is not theatre.
+
+    If httpx ever stops honouring proxy variables for loopback URLs, this test
+    fails and the guard above can be reconsidered. Until then it documents why
+    the guard exists.
+    """
+    import httpx
+
+    for v in _PROXY_VARS:
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("ALL_PROXY", "http://198.51.100.9:3128")
+    with httpx.Client() as default:
+        assert _pool_name(default) == "HTTPProxy"
+
+
+def test_every_ollama_call_path_uses_the_shared_client(monkeypatch):
+    """Embedder and both preflight probes must go through one factory."""
+    from lexiconlocal import embed as embed_mod
+    from lexiconlocal import preflight as pf
+
+    made: list[bool] = []
+    real = embed_mod.ollama_client
+
+    def counting(*a, **k):
+        made.append(True)
+        return real(*a, **k)
+
+    monkeypatch.setattr(embed_mod, "ollama_client", counting)
+    monkeypatch.setattr(pf, "ollama_client", counting)
+
+    embed_mod.Embedder().close()
+    pf._tags("http://127.0.0.1:1")          # refused connection is fine; the client is what matters
+    pf.check_embedding(host="http://127.0.0.1:1")
+    assert len(made) == 3, "a call path bypassed the shared Ollama client"
+
+
+def test_the_shared_client_sets_trust_env_false():
+    from lexiconlocal.embed import ollama_client
+
+    with ollama_client() as c:
+        assert c.trust_env is False

@@ -61,6 +61,24 @@ def require_local_model(model: str) -> str:
     return model
 
 
+def ollama_client(timeout: float = 60.0) -> httpx.Client:
+    """The only way this package talks to Ollama.
+
+    ``trust_env=False`` is the point. httpx honours ``HTTP_PROXY``,
+    ``HTTPS_PROXY`` and ``ALL_PROXY`` by default, and it applies them to
+    loopback URLs unless ``NO_PROXY`` happens to exclude them -- verified:
+    with ``ALL_PROXY`` set, a request to ``http://localhost:11434`` is routed
+    through ``httpcore.HTTPProxy`` rather than a direct ``ConnectionPool``.
+
+    Validating the *address* therefore did not establish that the request stays
+    on this machine: it checked where the request was pointed, not where it
+    would travel. An environment variable could send corpus text to a proxy
+    host while every host check still passed. One factory, so the invariant
+    cannot be forgotten at a call site.
+    """
+    return httpx.Client(timeout=timeout, trust_env=False)
+
+
 def require_local_host(host: str) -> str:
     """Return *host* normalised, or refuse it before a request is ever made.
 
@@ -110,7 +128,7 @@ class Embedder:
         self.model = require_local_model(model)
         self.host = require_local_host(host)
         self.batch_size = batch_size
-        self._client = httpx.Client(timeout=timeout)
+        self._client = ollama_client(timeout)
         self._dims: int | None = None
 
     # ---- lifecycle ---------------------------------------------------------
