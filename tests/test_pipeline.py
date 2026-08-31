@@ -14,6 +14,7 @@ from lexiconlocal.indexer import Indexer
 from lexiconlocal.report import build_report
 from lexiconlocal.search import Searcher
 from lexiconlocal.walk import iter_files
+from tests.conftest import _write, _write_jsonl
 
 
 class FakeEmbedder:
@@ -1003,75 +1004,6 @@ def test_a_missing_path_still_reports_not_found(indexed):
 # --------------------------------------------------------------------------
 # Stage 4.1 — filters scope retrieval instead of trimming its output
 # --------------------------------------------------------------------------
-
-def test_a_date_scoped_target_survives_stronger_out_of_scope_distractors(indexed):
-    """The starvation case, directly.
-
-    A filtered search used to take the best N of the whole corpus and then drop
-    what did not match, so a perfect in-scope match ranked below that cutoff was
-    unreachable. Scoping first means the candidates are drawn from the subset.
-    """
-    cfg, _ = indexed
-    s = Searcher(cfg, FakeEmbedder())
-    try:
-        rows = s.conn.execute(
-            """SELECT d.doc_date, COUNT(*) n FROM documents d JOIN chunks c ON c.doc_id=d.id
-               WHERE d.doc_date IS NOT NULL AND d.doc_date <> '' GROUP BY 1 ORDER BY 1"""
-        ).fetchall()
-        assert rows, "fixture must have dated documents"
-        cutoff = rows[-1]["doc_date"]
-        hits = s.search("the", after=cutoff, limit=10)
-        assert all(r.doc_date >= cutoff for r in hits), [r.doc_date for r in hits]
-    finally:
-        s.close()
-
-
-def test_a_tool_event_filter_skips_the_vector_leg_entirely(indexed):
-    """Those chunks carry no vectors, so a vector leg can only waste the pool."""
-    cfg, _ = indexed
-    s = Searcher(cfg, FakeEmbedder())
-    calls: list[int] = []
-    real = s._vec_leg
-    s._vec_leg = lambda q, limit, filters=None: (calls.append(limit), real(q, limit, filters))[1]
-    try:
-        s.search("tool", kind="tool_event", limit=10)
-        assert calls == [], "no vector leg should run for a vector-less kind"
-    finally:
-        s.close()
-
-
-def test_undated_documents_satisfy_neither_date_bound(indexed):
-    """Previously asymmetric: `COALESCE(date,'')` failed `after`, passed `before`."""
-    cfg, _ = indexed
-    s = Searcher(cfg, FakeEmbedder())
-    try:
-        undated = s.conn.execute(
-            "SELECT COUNT(*) n FROM documents WHERE doc_date IS NULL OR doc_date=''"
-        ).fetchone()["n"]
-        if not undated:
-            pytest.skip("fixture has no undated document to exercise this")
-        for hits in (s.search("the", before="2099-01-01", limit=50),
-                     s.search("the", after="1900-01-01", limit=50)):
-            assert all(r.doc_date for r in hits), "an undated doc satisfied a bound"
-    finally:
-        s.close()
-
-
-def test_date_bounds_are_inclusive(indexed):
-    cfg, _ = indexed
-    s = Searcher(cfg, FakeEmbedder())
-    try:
-        row = s.conn.execute(
-            """SELECT d.doc_date FROM documents d JOIN chunks c ON c.doc_id=d.id
-               WHERE d.doc_date IS NOT NULL AND d.doc_date <> '' LIMIT 1"""
-        ).fetchone()
-        day = row["doc_date"]
-        both = s.search("the", after=day, before=day, limit=50)
-        assert all(r.doc_date == day for r in both)
-    finally:
-        s.close()
-
-
 def test_the_eligible_count_joins_only_what_the_filter_needs(indexed):
     """A `kind` filter must not drag in `documents`.
 
@@ -1242,3 +1174,179 @@ def test_a_requested_cloud_model_never_reaches_the_embed_endpoint(monkeypatch):
     with pytest.raises(embed_mod.EmbedTargetRefused):
         embed_mod.Embedder(model="gpt-oss:120b-cloud")
     assert recorder.calls == [], "a cloud model reached the network"
+
+
+# --------------------------------------------------------------------------
+# Work Package B — filtered-retrieval regressions that cannot pass vacuously
+#
+# The Stage 4 tests asserted `all(r.<field> == expected for r in hits)`, which
+# an empty result list satisfies. They proved a filter never returned something
+# wrong; they never proved it returned the right thing. Every test below names a
+# target and asserts that target came back.
+# --------------------------------------------------------------------------
+
+#: A token that appears nowhere else in the fixtures, so BM25 competition is
+#: exactly what these tests construct and nothing more.
+TOKEN = "zorblax"
+
+
+@pytest.fixture
+def retrieval_corpus(lexicon_tree):
+    """A controlled corpus: one target per scenario, plus stronger distractors.
+
+    Distractors repeat TOKEN so they outrank the targets on BM25. Under the old
+    global-then-filter behaviour they would fill a reduced candidate pool and
+    starve the target out; under scoped retrieval they are excluded before
+    ranking, so the target survives.
+    """
+    repos = lexicon_tree.parent / "programming"
+    strong = " ".join([TOKEN] * 40)
+
+    # Alpha: the in-date target, and a stronger out-of-date sibling.
+    _write(repos / "Alpha" / f"target-2026-08-15.md", f"# Alpha target\n\n{TOKEN} appears once.\n")
+    _write(repos / "Alpha" / f"alpha-old-2026-01-10.md", f"# Alpha old\n\n{strong}\n")
+    # Beta: in date range, wrong project — the cross-filter distractor.
+    _write(repos / "Beta" / f"beta-2026-08-16.md", f"# Beta\n\n{strong}\n")
+    # More out-of-date bulk, to exhaust a reduced pool on its own.
+    for i in range(4):
+        _write(repos / "Beta" / f"bulk-{i}-2026-02-0{i + 1}.md", f"# Bulk {i}\n\n{strong}\n")
+    # A lexicon-tier note carrying the token, for the source-type case.
+    _write(lexicon_tree / "projects" / "alpha" / "overview.md",
+           f"# Alpha overview\n\nDate: 2026-08-15\n\n{TOKEN} in a curated note.\n")
+
+    # A transcript whose *tool* record carries the token, with stronger prose
+    # in the same session competing for it.
+    tdir = lexicon_tree / "archive" / "claude-code" / "-Users-operator-programming-Alpha"
+    _write_jsonl(tdir / "toolcase.jsonl", [
+        {"type": "user", "sessionId": "sess-zorb", "cwd": str(repos / "Alpha"),
+         "timestamp": "2026-08-15T10:00:00Z",
+         "message": {"role": "user", "content": f"prose {strong}"}},
+        {"type": "assistant", "sessionId": "sess-zorb", "timestamp": "2026-08-15T10:00:05Z",
+         "message": {"role": "assistant", "content": [
+             {"type": "text", "text": f"more prose {strong}"},
+             {"type": "tool_use", "name": "Bash",
+              "input": {"command": f"run --flag {TOKEN}", "description": "the tool target"}},
+         ]}},
+    ])
+
+    cfg = load_config(lexicon_tree / "config.yaml")
+    Indexer(cfg, FakeEmbedder(), verbose=False).run(full=True, batch_size=8)
+    return cfg
+
+
+def _paths(results):
+    return [r.path for r in results]
+
+
+def test_a_date_scoped_target_is_retrieved_despite_stronger_out_of_date_matches(
+    retrieval_corpus, monkeypatch
+):
+    """B1 — the starvation case, proven by retrieval rather than by absence.
+
+    The pool is shrunk so the out-of-date distractors would fill it entirely.
+    Scoping first is the only reason the target can come back.
+    """
+    import lexiconlocal.search as search_mod
+
+    monkeypatch.setattr(search_mod, "BROAD_CANDIDATES", 3)
+    monkeypatch.setattr(search_mod, "CANDIDATES", 3)
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    try:
+        hits = s.search(TOKEN, after="2026-08-01", limit=10)
+        assert hits, "the in-date target was starved out of the candidate pool"
+        assert any("target-2026-08-15.md" in p for p in _paths(hits)), _paths(hits)
+        assert not any("2026-01-10" in p or "2026-02-0" in p for p in _paths(hits)), _paths(hits)
+    finally:
+        s.close()
+
+
+def test_a_project_and_date_conjunction_returns_only_the_intended_target(retrieval_corpus):
+    """B5 — both filters at once, with a distractor that defeats each alone."""
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    try:
+        hits = s.search(TOKEN, project="Alpha", after="2026-08-01", limit=10)
+        assert hits, "conjunction of project and date returned nothing"
+        paths = _paths(hits)
+        assert any("target-2026-08-15.md" in p for p in paths), paths
+        assert not any("alpha-old" in p for p in paths), "same project, wrong date"
+        assert not any("/Beta/" in p for p in paths), "right date, wrong project"
+    finally:
+        s.close()
+
+
+def test_date_bounds_are_inclusive_on_both_ends(retrieval_corpus):
+    """B4 — after == before == the target's own day must find it."""
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    try:
+        hits = s.search(TOKEN, after="2026-08-15", before="2026-08-15", limit=10)
+        assert hits, "an inclusive single-day window returned nothing"
+        assert any("target-2026-08-15.md" in p for p in _paths(hits)), _paths(hits)
+    finally:
+        s.close()
+
+
+def test_a_source_type_target_survives_candidate_truncation(retrieval_corpus, monkeypatch):
+    """B6 — the lexicon-tier note is retrievable though repo-docs outrank it."""
+    import lexiconlocal.search as search_mod
+
+    monkeypatch.setattr(search_mod, "BROAD_CANDIDATES", 3)
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    try:
+        hits = s.search(TOKEN, source_type="lexicon", limit=10)
+        assert hits, "the lexicon-tier target was starved by stronger repo-docs"
+        assert all(r.source_type == "lexicon" for r in hits)
+        assert any("projects/alpha/overview.md" in p for p in _paths(hits)), _paths(hits)
+    finally:
+        s.close()
+
+
+def test_a_tool_event_target_is_retrieved_not_merely_unstarved(retrieval_corpus):
+    """B2 — prove retrieval, and prove the vector leg never ran.
+
+    The earlier version asserted only that no vector leg was called, which is
+    true of a search that returns nothing at all.
+    """
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    calls: list[int] = []
+    real_vec = s._vec_leg
+    s._vec_leg = lambda q, limit, filters=None: (calls.append(limit), real_vec(q, limit, filters))[1]
+    try:
+        hits = s.search(TOKEN, kind="tool_event", limit=10)
+        assert hits, "the tool-event target was not retrieved"
+        assert all(r.chunk_kind == "tool_event" for r in hits)
+        assert any(TOKEN in r.excerpt.lower() for r in hits), [r.excerpt[:80] for r in hits]
+        assert calls == [], "a vector leg ran for chunks that carry no vectors"
+    finally:
+        s.close()
+
+
+def test_an_undated_document_is_excluded_by_either_bound_while_a_dated_one_is_returned(
+    retrieval_corpus,
+):
+    """B3 — the asymmetry, with a target proving the search still works.
+
+    Markdown always receives a date (filename, header, or mtime), so an undated
+    document is made here the only way one really arises: a row whose date the
+    parser could not determine.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(retrieval_corpus.db_path)
+    conn.execute(
+        "UPDATE documents SET doc_date = NULL WHERE path LIKE '%beta-2026-08-16.md'"
+    )
+    conn.commit()
+    conn.close()
+
+    s = Searcher(retrieval_corpus, FakeEmbedder())
+    try:
+        for kwargs in ({"after": "2026-01-01"}, {"before": "2099-01-01"}):
+            hits = s.search(TOKEN, limit=20, **kwargs)
+            assert hits, f"no results at all for {kwargs} — the assertion below would be vacuous"
+            assert all(r.doc_date for r in hits), f"an undated document satisfied {kwargs}"
+            assert not any("beta-2026-08-16.md" in r.path for r in hits), kwargs
+        # and without a bound it comes back, so the exclusion is the filter's doing
+        unfiltered = s.search(TOKEN, limit=20)
+        assert any("beta-2026-08-16.md" in r.path for r in unfiltered), _paths(unfiltered)
+    finally:
+        s.close()
