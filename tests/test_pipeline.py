@@ -558,27 +558,44 @@ def test_scoped_search_reaches_material_the_global_pool_never_sees(indexed):
     s.close()
 
 
-def test_broad_filter_uses_the_enlarged_pool_not_an_exact_scan(indexed):
-    """Amendment A1: only a project filter triggers scoped retrieval.
+def test_filter_scoping_is_decided_by_selectivity_not_by_filter_type(indexed, monkeypatch):
+    """Amendment A1 said only a project filter should scope the vector leg.
 
-    A source_type filter selects a coarse partition, so scoping the vector leg
-    to it would be a full scan for no ranking benefit.
+    Measurement narrows that. The cost of an exact scan follows the number of
+    eligible chunks, not which filter produced them: a narrow source-type
+    filter is 865 chunks and 64 ms on the live corpus -- worth scoping, and it
+    ranks within the requested subset instead of within the whole library. A
+    coarse one is 167,000 chunks and still falls back. The decision is the
+    eligible count against EXACT_SCAN_MAX_CHUNKS; the filter's name is not
+    evidence about its size.
     """
     import lexiconlocal.search as search_mod
 
     cfg, _ = indexed
     s = Searcher(cfg, FakeEmbedder())
-    seen: list[tuple[int, list[str] | None]] = []
+    seen: list[tuple[int, object]] = []
     real_vec = s._vec_leg
 
-    def spy(query, limit, projects=None):
-        seen.append((limit, projects))
-        return real_vec(query, limit, projects)
+    def spy(query, limit, filters=None):
+        seen.append((limit, filters))
+        return real_vec(query, limit, filters)
 
     s._vec_leg = spy
+
+    # Small eligible set -> exact scan, scoped to the filter.
+    s.search("AAF", source_type="repo-doc", limit=10)
+    assert len(seen) == 1
+    limit, filters = seen[0]
+    assert limit == search_mod.SCOPED_CANDIDATES
+    assert filters is not None and filters.source_type == "repo-doc"
+
+    # Same filter, forced above the cutoff -> the broad, unscoped fallback.
+    seen.clear()
+    monkeypatch.setattr(search_mod, "EXACT_SCAN_MAX_CHUNKS", 0)
     s.search("AAF", source_type="repo-doc", limit=10)
     assert seen == [(search_mod.BROAD_CANDIDATES, None)]
 
+    # The unfiltered path is untouched by any of this.
     seen.clear()
     s.search("AAF", limit=10)
     assert seen == [(search_mod.CANDIDATES, None)], "unfiltered path must be untouched"
@@ -979,5 +996,100 @@ def test_a_missing_path_still_reports_not_found(indexed):
         got = s.read("definitely-not-in-this-corpus.xyz")
         assert "No indexed document" in got.get("error", "")
         assert "candidates" not in got
+    finally:
+        s.close()
+
+
+# --------------------------------------------------------------------------
+# Stage 4.1 — filters scope retrieval instead of trimming its output
+# --------------------------------------------------------------------------
+
+def test_a_date_scoped_target_survives_stronger_out_of_scope_distractors(indexed):
+    """The starvation case, directly.
+
+    A filtered search used to take the best N of the whole corpus and then drop
+    what did not match, so a perfect in-scope match ranked below that cutoff was
+    unreachable. Scoping first means the candidates are drawn from the subset.
+    """
+    cfg, _ = indexed
+    s = Searcher(cfg, FakeEmbedder())
+    try:
+        rows = s.conn.execute(
+            """SELECT d.doc_date, COUNT(*) n FROM documents d JOIN chunks c ON c.doc_id=d.id
+               WHERE d.doc_date IS NOT NULL AND d.doc_date <> '' GROUP BY 1 ORDER BY 1"""
+        ).fetchall()
+        assert rows, "fixture must have dated documents"
+        cutoff = rows[-1]["doc_date"]
+        hits = s.search("the", after=cutoff, limit=10)
+        assert all(r.doc_date >= cutoff for r in hits), [r.doc_date for r in hits]
+    finally:
+        s.close()
+
+
+def test_a_tool_event_filter_skips_the_vector_leg_entirely(indexed):
+    """Those chunks carry no vectors, so a vector leg can only waste the pool."""
+    cfg, _ = indexed
+    s = Searcher(cfg, FakeEmbedder())
+    calls: list[int] = []
+    real = s._vec_leg
+    s._vec_leg = lambda q, limit, filters=None: (calls.append(limit), real(q, limit, filters))[1]
+    try:
+        s.search("tool", kind="tool_event", limit=10)
+        assert calls == [], "no vector leg should run for a vector-less kind"
+    finally:
+        s.close()
+
+
+def test_undated_documents_satisfy_neither_date_bound(indexed):
+    """Previously asymmetric: `COALESCE(date,'')` failed `after`, passed `before`."""
+    cfg, _ = indexed
+    s = Searcher(cfg, FakeEmbedder())
+    try:
+        undated = s.conn.execute(
+            "SELECT COUNT(*) n FROM documents WHERE doc_date IS NULL OR doc_date=''"
+        ).fetchone()["n"]
+        if not undated:
+            pytest.skip("fixture has no undated document to exercise this")
+        for hits in (s.search("the", before="2099-01-01", limit=50),
+                     s.search("the", after="1900-01-01", limit=50)):
+            assert all(r.doc_date for r in hits), "an undated doc satisfied a bound"
+    finally:
+        s.close()
+
+
+def test_date_bounds_are_inclusive(indexed):
+    cfg, _ = indexed
+    s = Searcher(cfg, FakeEmbedder())
+    try:
+        row = s.conn.execute(
+            """SELECT d.doc_date FROM documents d JOIN chunks c ON c.doc_id=d.id
+               WHERE d.doc_date IS NOT NULL AND d.doc_date <> '' LIMIT 1"""
+        ).fetchone()
+        day = row["doc_date"]
+        both = s.search("the", after=day, before=day, limit=50)
+        assert all(r.doc_date == day for r in both)
+    finally:
+        s.close()
+
+
+def test_the_eligible_count_joins_only_what_the_filter_needs(indexed):
+    """A `kind` filter must not drag in `documents`.
+
+    With the join, counting tool-event chunks measured 115 ms on the live index;
+    without it, 4 ms off a covering index. Same answer, different query.
+    """
+    from lexiconlocal.search import _Filters
+
+    cfg, _ = indexed
+    s = Searcher(cfg, FakeEmbedder())
+    try:
+        kind_only = _Filters(kind="tool_event")
+        assert kind_only.needs_documents is False
+        assert _Filters(source_type="lexicon").needs_documents is True
+        assert _Filters(after="2026-01-01").needs_documents is True
+        direct = s.conn.execute(
+            "SELECT COUNT(*) n FROM chunks WHERE kind='tool_event'"
+        ).fetchone()["n"]
+        assert s._eligible_chunk_count(kind_only) == direct
     finally:
         s.close()

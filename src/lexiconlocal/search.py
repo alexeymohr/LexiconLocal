@@ -176,6 +176,67 @@ def _lexical_coverage(query: str, text: str) -> float:
 #: How many candidate paths an ambiguous read lists. Enough to choose from,
 #: bounded so that a one-character fragment cannot pour the corpus into an
 #: agent's context window.
+@dataclass(frozen=True)
+class _Filters:
+    """The active filters, represented once.
+
+    They used to live as several near-duplicate predicates: one set scoping the
+    project inside candidate generation, another re-checking everything after
+    the fact. Two spellings of the same rule drift, and the after-the-fact copy
+    was the only one `source_type`, `kind` and the date bounds ever had.
+    """
+
+    projects: list[str] | None = None
+    source_type: str | None = None
+    kind: str | None = None
+    after: str | None = None
+    before: str | None = None
+
+    @property
+    def any_active(self) -> bool:
+        return any((self.projects, self.source_type, self.kind, self.after, self.before))
+
+    @property
+    def dated(self) -> bool:
+        return bool(self.after or self.before)
+
+    @property
+    def needs_documents(self) -> bool:
+        """Whether a query must join `documents` at all.
+
+        `kind` lives on `chunks`. Joining `documents` to count tool-event chunks
+        cost 115 ms; without the join the same count is 4 ms off a covering
+        index. Join what the filter references, nothing more.
+        """
+        return bool(self.projects or self.source_type or self.dated)
+
+    def sql(self) -> tuple[str, list]:
+        """`(predicate, params)` — ``1=1`` when nothing is active."""
+        parts, params = ["1=1"], []
+        if self.projects:
+            ph = ",".join("?" for _ in self.projects)
+            parts.append(f"LOWER(d.project) IN ({ph})")
+            params.extend(p.lower() for p in self.projects)
+        if self.source_type:
+            parts.append("d.source_type = ?")
+            params.append(self.source_type)
+        if self.kind:
+            parts.append("c.kind = ?")
+            params.append(self.kind)
+        # An undated document has no date to compare, so it satisfies neither
+        # bound. Comparing `COALESCE(doc_date,'')` made it fail `after` and pass
+        # `before`, which is not a policy anyone chose.
+        if self.dated:
+            parts.append("d.doc_date IS NOT NULL AND d.doc_date <> ''")
+        if self.after:
+            parts.append("d.doc_date >= ?")
+            params.append(self.after)
+        if self.before:
+            parts.append("d.doc_date <= ?")
+            params.append(self.before)
+        return " AND ".join(parts), params
+
+
 AMBIGUOUS_READ_LIMIT = 10
 
 
@@ -331,22 +392,31 @@ class Searcher:
     # ---- legs --------------------------------------------------------------
 
     def _fts_leg(
-        self, query: str, limit: int, projects: list[str] | None = None
+        self, query: str, limit: int, filters: "_Filters | None" = None
     ) -> list[tuple[int, int]]:
+        """BM25 candidates, scoped to *filters* before the ranking and the LIMIT.
+
+        Scoping here rather than afterwards is the whole point: a filtered query
+        used to take the best `limit` rows of the entire corpus and then discard
+        the ones that did not match, so anything below that cutoff could not be
+        returned however well it fitted the filter.
+        """
         expr = _fts_query(query)
+        filters = filters or _Filters()
         try:
-            if projects:
-                ph = ",".join("?" for _ in projects)
+            if filters.any_active:
+                pred, params = filters.sql()
+                join = "JOIN documents d ON d.id = c.doc_id" if filters.needs_documents else ""
                 rows = self.conn.execute(
                     f"""
                     SELECT f.rowid AS rowid
                     FROM chunks_fts f
                     JOIN chunks c    ON c.id = f.rowid
-                    JOIN documents d ON d.id = c.doc_id
-                    WHERE chunks_fts MATCH ? AND LOWER(d.project) IN ({ph})
+                    {join}
+                    WHERE chunks_fts MATCH ? AND {pred}
                     ORDER BY bm25(chunks_fts) LIMIT ?
                     """,
-                    (expr, *[p.lower() for p in projects], limit),
+                    (expr, *params, limit),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
@@ -357,6 +427,19 @@ class Searcher:
         except sqlite3.OperationalError:
             return []
         return [(int(r["rowid"]), i) for i, r in enumerate(rows)]
+
+    def _eligible_chunk_count(self, filters: "_Filters") -> int:
+        """How many chunks the filter admits — the selectivity decision.
+
+        Joins `documents` only when the filter references it. With the join, a
+        `kind` count measured 115 ms; without, 4 ms off a covering index.
+        """
+        pred, params = filters.sql()
+        join = "JOIN documents d ON d.id = c.doc_id" if filters.needs_documents else ""
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM chunks c {join} WHERE {pred}", params
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def _project_chunk_count(self, projects: list[str]) -> int:
         """How many chunks a project holds, without touching the vector table.
@@ -390,7 +473,7 @@ class Searcher:
         return dbmod.serialize_f32(vec)
 
     def _vec_leg(
-        self, query: str, limit: int, projects: list[str] | None = None
+        self, query: str, limit: int, filters: "_Filters | None" = None
     ) -> list[tuple[int, int, float]]:
         """Nearest chunks, either by KNN over everything or exactly within a project.
 
@@ -409,19 +492,20 @@ class Searcher:
         if q is None:
             return []
         try:
-            if projects:
-                ph = ",".join("?" for _ in projects)
+            if filters is not None and filters.any_active:
+                pred, params = filters.sql()
+                join = "JOIN documents d ON d.id = c.doc_id" if filters.needs_documents else ""
                 rows = self.conn.execute(
                     f"""
                     SELECT c.id AS chunk_id,
                            vec_distance_l2(v.embedding, ?) AS distance
                     FROM chunks c
-                    JOIN documents d  ON d.id = c.doc_id
+                    {join}
                     JOIN chunk_vecs v ON v.chunk_id = c.id
-                    WHERE LOWER(d.project) IN ({ph})
+                    WHERE {pred}
                     ORDER BY distance LIMIT ?
                     """,
-                    (q, *[p.lower() for p in projects], limit),
+                    (q, *params, limit),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
@@ -450,18 +534,28 @@ class Searcher:
         # (D1), and how it is scoped depends on how selective the filter is
         # (amendment A1).
         projects = self.projects.resolve(project) if project else None
-        if projects:
-            # The lexical leg is always exactly scoped: it is cheap (~97 ms at
-            # any project size) and on its own guarantees a full page, which is
-            # what makes the vector fallback below safe.
-            fts = self._fts_leg(query, SCOPED_CANDIDATES, projects)
-            if self._project_chunk_count(projects) <= EXACT_SCAN_MAX_CHUNKS:
-                vec = self._vec_leg(query, SCOPED_CANDIDATES, projects)
+        filters = _Filters(
+            projects=projects, source_type=source_type, kind=kind,
+            after=after, before=before,
+        )
+        if filters.any_active:
+            # The lexical leg is always exactly scoped: it is cheap at any size
+            # and on its own guarantees a full page, which is what makes the
+            # vector fallback below safe.
+            pool = SCOPED_CANDIDATES if projects else BROAD_CANDIDATES
+            fts = self._fts_leg(query, pool, filters)
+            if filters.kind == KIND_TOOL_EVENT:
+                # Those chunks are FTS-only by design; a vector leg here can
+                # only return rows the filter is about to discard.
+                vec = []
+            elif self._eligible_chunk_count(filters) <= EXACT_SCAN_MAX_CHUNKS:
+                vec = self._vec_leg(query, SCOPED_CANDIDATES, filters)
             else:
+                # Above the cutoff an exact scan stops being affordable, so the
+                # vector leg stays global. Lexical starvation is fixed; a
+                # vector-only match outside the global top-k still cannot
+                # surface for a broad filter. Stated, not hidden.
                 vec = self._vec_leg(query, BROAD_CANDIDATES)
-        elif source_type or kind or after or before:
-            fts = self._fts_leg(query, BROAD_CANDIDATES)
-            vec = self._vec_leg(query, BROAD_CANDIDATES)
         else:
             fts = self._fts_leg(query, CANDIDATES)
             vec = self._vec_leg(query, CANDIDATES)
@@ -496,9 +590,14 @@ class Searcher:
                 continue
             if kind and r["kind"] != kind:
                 continue
-            if after and (r["doc_date"] or "") < after:
+            # Defensive only -- the filter above is the mechanism now. An
+            # undated document satisfies neither bound: `COALESCE(date,'')` made
+            # it fail `after` and pass `before`, which nobody chose.
+            if (after or before) and not r["doc_date"]:
                 continue
-            if before and (r["doc_date"] or "") > before:
+            if after and r["doc_date"] < after:
+                continue
+            if before and r["doc_date"] > before:
                 continue
             if projects is not None:
                 have = (r["project"] or "").lower()
