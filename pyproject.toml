@@ -1,6 +1,6 @@
 [project]
 name = "lexiconlocal"
-version = "0.3.0"
+version = "0.3.1"
 description = "A local, offline second brain for coding agents: capture every session and every repo's docs, search them from any agent."
 readme = "README.md"
 license = "MIT"

@@ -97,6 +97,11 @@ Several constants were **measured, not derived** — the static ranking boosts, 
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — every key in `config.yaml`
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — what runs unattended, what each failure means, what was calibrated
 
+## Changes
+
+[`CHANGELOG.md`](CHANGELOG.md) — what changed in each release, and which changes
+are breaking.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
