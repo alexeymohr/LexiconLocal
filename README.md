@@ -88,6 +88,16 @@ Several constants were **measured, not derived** — the static ranking boosts, 
 ## Privacy
 
 - Everything local. No cloud APIs, no telemetry.
+- **What "local" is enforced to mean.** The embedding host must be loopback and is
+  refused before a request is made; Ollama traffic sets `trust_env=False`, so a
+  `HTTP_PROXY` or `ALL_PROXY` in your environment cannot route it elsewhere; and
+  models whose tag marks them as hosted (`model:cloud`, `model:120b-cloud`) are
+  refused. Note what that does *not* prove: loopback addressing means the request
+  reaches Ollama on this machine, not that Ollama performed the inference here.
+  For assurance beyond LexiconLocal's reach, Ollama's own
+  [`OLLAMA_NO_CLOUD=1`](https://ollama.com) disables its cloud features
+  server-wide. LexiconLocal will not set it for you — your Ollama configuration
+  is yours.
 - `private/`, `.env` files, keys, and the PII files inside account exports are never indexed. Credential-shaped strings are redacted on ingest.
 - Your data repo has no remote. This code repo is public — and ships with a leak guard (`scripts/leak_guard.py`, wired in by `scripts/install_hooks.sh`) that derives the names of *your* projects from *your* Lexicon at commit time and refuses to let them into a commit or a push. If you contribute, install the hooks first.
 
