@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.3.2
+
+Privacy hardening and stronger regression coverage. No reindex; nothing stored
+changes.
+
+### Fixed — local-only was not fully enforced
+
+- **Ollama traffic no longer honours environment proxies.** 0.3.1 validated that
+  the embedding host was loopback, which established where a request was
+  *pointed* and not where it would *travel*. httpx applies `HTTP_PROXY` /
+  `ALL_PROXY` to loopback URLs unless `NO_PROXY` excludes them — verified against
+  the transport it selects — so an environment variable could have routed corpus
+  text through a proxy while every host check passed. All Ollama traffic now goes
+  through one client with `trust_env=False`.
+- **Every Ollama cloud-tag form is recognised.** The guard matched `model:cloud`
+  only, so `gpt-oss:120b-cloud`, `qwen3-coder:480b-cloud` and any uppercase
+  variant went through. The tag is now read after the final colon and matched
+  case-insensitively against `cloud` and any `-cloud` suffix. `preflight` had a
+  second hand-written copy of the rule; there is now one predicate.
+
+### Documentation
+
+- The README states what enforcement proves and what it does not: loopback
+  addressing means the request reached Ollama on this machine, not that Ollama
+  performed the inference here. Ollama's own `OLLAMA_NO_CLOUD=1` is documented as
+  an optional operator measure — verified present in Ollama 0.33.0. LexiconLocal
+  does not set it.
+- The 0.3.1 note on filtered ranking is qualified where it is made: lexical
+  ranking happens within the requested subset, vector ranking only when the
+  subset is at or below the exact-scan threshold.
+
+### Investigated, not implemented
+
+`/api/tags` was inspected for a signal that a model has local weights. Entries
+carry `size`, `digest`, `details` and `capabilities`, but with only local models
+installed there was nothing to compare against, and `size > 0` is a heuristic
+rather than a documented guarantee. No check was added; recording the finding is
+the honest outcome.
+
+### Tests
+
+Filtered-search regressions now name the document they expect and assert it came
+back. The previous ones asserted `all(...)` over the results, which an empty list
+satisfies — they proved a filter returned nothing wrong, never that it returned
+the right thing. Verified against the defect they guard: with candidate
+generation reverted, the date-scoped case returns a distractor rather than the
+target, and returns one result rather than none, so a non-empty assertion alone
+would not have caught it.
+
 ## 0.3.1
 
 Hardening pass. No reindex is required and nothing stored changes: the pipeline
