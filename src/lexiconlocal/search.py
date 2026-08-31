@@ -431,31 +431,24 @@ class Searcher:
     def _eligible_chunk_count(self, filters: "_Filters") -> int:
         """How many chunks the filter admits — the selectivity decision.
 
-        Joins `documents` only when the filter references it. With the join, a
-        `kind` count measured 115 ms; without, 4 ms off a covering index.
+        Three things this deliberately does not do, inherited from the
+        project-only probe it replaces:
+
+        * It counts `chunks`, never the join to `chunk_vecs`. That join is the
+          expensive thing being decided about — a bare COUNT over it costs about
+          the same per row as the distance query itself — so measuring it would
+          cost what the measurement is meant to avoid. This probe is sub-millisecond.
+        * It joins `documents` only when the filter references a document
+          column. With the join, a `kind` count measured 115 ms; without, 4 ms
+          off a covering index.
+        * Chunk count over-estimates vector count, because tool-event chunks are
+          never embedded. The decision therefore errs toward the cheaper path,
+          which is the right direction to be wrong in.
         """
         pred, params = filters.sql()
         join = "JOIN documents d ON d.id = c.doc_id" if filters.needs_documents else ""
         row = self.conn.execute(
             f"SELECT COUNT(*) AS n FROM chunks c {join} WHERE {pred}", params
-        ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def _project_chunk_count(self, projects: list[str]) -> int:
-        """How many chunks a project holds, without touching the vector table.
-
-        Deliberately counts `chunks`, not the join to `chunk_vecs`: the join is
-        the expensive thing being decided about (a bare COUNT over it costs the
-        same ~85 us per row as the distance query itself), while this probe
-        measures 0.0-0.3 ms. Chunk count is also an over-estimate of vector
-        count -- tool-event chunks are never embedded -- so the decision errs
-        toward the cheaper path.
-        """
-        ph = ",".join("?" for _ in projects)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) AS n FROM chunks c JOIN documents d ON d.id = c.doc_id "
-            f"WHERE LOWER(d.project) IN ({ph})",
-            [p.lower() for p in projects],
         ).fetchone()
         return int(row["n"]) if row else 0
 
@@ -475,14 +468,16 @@ class Searcher:
     def _vec_leg(
         self, query: str, limit: int, filters: "_Filters | None" = None
     ) -> list[tuple[int, int, float]]:
-        """Nearest chunks, either by KNN over everything or exactly within a project.
+        """Nearest chunks: KNN over everything, or an exact scan inside *filters*.
 
-        The scoped branch computes the distance directly rather than using the
+        The scoped branch takes any filter, not only a project -- it accepted
+        project alone when this comment was first written, and the docstring
+        outlived that. It computes the distance directly rather than using the
         `embedding MATCH ... AND k = ?` KNN, because our `vec0` table declares
         no metadata columns and so cannot be pre-filtered -- a KNN would have to
-        take the global top-k and hope the project appears in it, which is the
-        very failure being fixed. An exact scan over one project's vectors has
-        no `k` cap and cannot starve.
+        take the global top-k and hope the wanted rows appear in it, which is the
+        very failure being fixed. An exact scan over the eligible vectors has no
+        `k` cap and cannot starve.
 
         `vec_distance_l2` and not `vec_distance_cosine`: the KNN branch returns
         L2, and the two legs must produce distances on the same scale or the

@@ -31,8 +31,13 @@ version is untouched, so an existing index carries straight over.
   `source_type`, `kind` and the date bounds now constrain candidate generation,
   as `project` already did. Previously a filtered search took the best 1,600
   chunks of the whole corpus and discarded the rest, so a well-matching document
-  ranked below that cutoff could not be returned at all, and what survived kept a
-  ranking computed against material the filter had excluded.
+  ranked below that cutoff could not be returned at all.
+
+  Precisely: lexical retrieval and ranking happen inside the requested subset,
+  and vector ranking does too when the subset is at or below the exact-scan
+  threshold. Above that threshold the vector leg keeps its global fallback, so
+  its ranking is still computed against the whole corpus. Saying ranking happens
+  within the subset, without that qualifier, would overstate it.
 - **Human-readable search leads with confidence**, keeping the RRF score as
   secondary diagnostics, and emits the same low-coverage warning the MCP surface
   has always had. JSON output is unchanged.

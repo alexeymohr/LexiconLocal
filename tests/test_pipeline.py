@@ -634,19 +634,33 @@ def test_large_project_falls_back_to_the_global_pool(indexed):
     s.close()
 
 
-def test_project_chunk_count_does_not_touch_the_vector_table(indexed):
-    """The size probe must be cheap, or it costs what it is deciding about."""
+def test_the_selectivity_probe_never_touches_the_vector_table(indexed):
+    """The size probe must be cheap, or it costs what it is deciding about.
+
+    Carried forward from the project-only probe this replaced: a COUNT over the
+    join to `chunk_vecs` costs about the same per row as the distance query the
+    probe exists to avoid.
+    """
+    from lexiconlocal.search import _Filters
+
     cfg, _ = indexed
     s = Searcher(cfg, FakeEmbedder())
-    projects = s.projects.resolve("Forge")
-    plan = [r["detail"] for r in s.conn.execute(
-        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM chunks c "
-        "JOIN documents d ON d.id = c.doc_id WHERE LOWER(d.project) IN (?)",
-        [projects[0].lower()],
-    ).fetchall()]
-    assert not any("chunk_vecs" in d for d in plan), plan
-    assert s._project_chunk_count(projects) > 0
-    s.close()
+    try:
+        for filters in (_Filters(projects=s.projects.resolve("Forge")),
+                        _Filters(kind="tool_event"),
+                        _Filters(source_type="lexicon"),
+                        _Filters(after="2026-01-01")):
+            pred, params = filters.sql()
+            join = "JOIN documents d ON d.id = c.doc_id" if filters.needs_documents else ""
+            plan = [r["detail"] for r in s.conn.execute(
+                f"EXPLAIN QUERY PLAN SELECT COUNT(*) FROM chunks c {join} WHERE {pred}",
+                params).fetchall()]
+            assert not any("chunk_vecs" in d for d in plan), (filters, plan)
+            assert s._eligible_chunk_count(filters) >= 0
+        # and the probe reports a real number where there is material
+        assert s._eligible_chunk_count(_Filters(kind="prose")) > 0
+    finally:
+        s.close()
 
 
 # --------------------------------------------------------------------------
